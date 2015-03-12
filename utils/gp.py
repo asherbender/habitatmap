@@ -21,7 +21,7 @@ def chunk_index(length, number_chunks):
     """Yield index to array in chunks."""
 
     j = -1
-    n = int(length / number_chunks)
+    n = int(np.ceil(float(length) / number_chunks))
     for i in xrange(0, length, n):
         j += 1
         if (i + n) <= length:
@@ -94,7 +94,30 @@ def gpr_chunk_inference(chunks, xs, model, verbose=True):
     return f_xs, V_xs
 
 
-def _gpc_predict(models, xs, verbose=False, **kwargs):
+def _gpc_optimise(model, iterations, max_iterations, verbose):
+
+    if verbose:
+        print 'Optimising parameters for {0}'.format(model.name)
+
+    # Perform several optimisation trials.
+    for i in range(iterations):
+
+        # Run approximation method (EP by default) and then optimise the kernel
+        # parameters.
+        model.optimize('bfgs', max_iters=max_iterations)
+
+        if verbose:
+            msg = '    iteration {0:>3n} of {1:>3n}, f = {2:>10.4f}'
+            print msg.format(i + 1, iterations, model.log_likelihood())
+
+    if verbose:
+        print ''
+
+    return model
+
+
+def _gpc_predict(models, xs):
+    """Function for training Gaussian process classifier."""
 
     # Pre-allocate memory.
     K = len(models)
@@ -104,12 +127,10 @@ def _gpc_predict(models, xs, verbose=False, **kwargs):
 
     # Iterate through models.
     for i, model in enumerate(models):
-        if verbose:
-            print 'Predicting using model {0}'.format(i + 1)
 
         # Perform inference in the latent function space and then squash
         # the output through the likelihood function.
-        f_i, v_i = model._raw_predict(xs, **kwargs)
+        f_i, v_i = model._raw_predict(xs)
         p_i = model.likelihood.predictive_values(f_i, v_i)[0]
 
         # The output of GPy inference are [Nx1] arrays. Numpy's
@@ -131,24 +152,24 @@ def _gpc_predict(models, xs, verbose=False, **kwargs):
 class GPClassification(object):
     """Create an all-vs-one Gaussian process classifier."""
 
-    def __init__(self, X, Y, kernel=None, sparse=False, inducing=10,
-                 verbose=True):
+    def __init__(self, X, Y, kernel=None, threads=None, sparse=False,
+                 inducing=10, verbose=True):
         """Initialise the classification model."""
 
         # Store level of output.
         self.__verbose = verbose
+        self.__threads = threads
 
         # Ensure the inputs and outputs are paired.
         if X.shape[0] != Y.shape[0]:
             raise Exception('The input and outputs must be the same length.')
 
-        # By default, use a squared exponential kernel for the classification
-        # model.
-        if kernel is None:
-            kernel = GPy.kern.RBF(X.shape[1])
-
         # Find unique set of labels in the data set.
         self.__labels = np.unique(Y.flatten())
+
+        # Currently we cannot parallelise the sparse model.
+        if sparse and (threads is not None):
+            raise Exception('The sparse model cannot be parallelise.')
 
         # If the model is SPARSE create inducing points.
         if sparse:
@@ -164,11 +185,16 @@ class GPClassification(object):
                 idx = np.linspace(0, len(X)-1, num_inducing).astype(int)
                 Z = X[np.unique(idx), :].copy()
 
+        # By default, use a squared exponential kernel for the classification
+        # model.
+        if kernel is None:
+            kernel = GPy.kern.RBF(X.shape[1])
+
         # Create a Gaussian process classifier for each label in the dataset.
         self.__models = list()
         for i, label in enumerate(self.__labels):
             if self.__verbose:
-                print 'Creating model for label {0}'.format(label)
+                print 'Creating model for class {0}'.format(i + 1)
 
             # Perform all-vs-one classification for the current class.
             c = (Y == label).astype(int)
@@ -191,66 +217,77 @@ class GPClassification(object):
                 # Attempt to optimise the location of the inducing inputs.
                 gpc.Z.unconstrain()
 
+            # Name model.
+            gpc.name = 'Class {0}'.format(str(self.__labels[i]))
+
             # Store model.
             self.__models.append(gpc)
 
-    def optimise(self, iterations=10, max_iters=100):
+    def optimise(self, iterations=10, max_iterations=100, verbose=True):
         """Optimise the kernel parameters."""
 
         # Iterate through models.
         t0 = time()
-        for i, model in enumerate(self.__models):
-            if self.__verbose:
-                msg = 'Optimising parameters for label {0}'
-                print msg.format(self.__labels[i])
 
-            # perform several optimisation trials.
-            for i in range(iterations):
-                if self.__verbose:
-                    msg = '    iteration {0:>3n} of {1:>3n}, '
-                    sys.stdout.write(msg.format(i + 1, iterations))
+        # Perform optimisation on a SINGLE process.
+        if not self.__threads:
+            for i, model in enumerate(self.__models):
+                self.__models[i] = _gpc_optimise(model,
+                                                 iterations,
+                                                 max_iterations,
+                                                 self.__verbose)
 
-                # Run approximation method (EP by default) and then optimise
-                # the kernel parameters.
-                model.optimize('bfgs', max_iters=max_iters)
+        # Perform optimisation on MULTIPLE processes.
+        else:
+            pool = mp.Pool(processes=self.__threads)
 
-                if self.__verbose:
-                    print 'f = {0:>10.3f}'.format(model.log_likelihood())
+            results = list()
+            for i, model in enumerate(self.__models):
 
-            if self.__verbose:
-                sys.stdout.write('\n')
+                args = (model, iterations, max_iterations, False)
+                result = pool.apply_async(_gpc_optimise, args=args)
+                results.append(result)
 
-        if self.__verbose:
-            print '\nElapsed time {0:.3f}s'.format(time() - t0)
+            # Prevent any more tasks from being submitted to the pool. Once all
+            # the tasks have been completed the worker processes will
+            # exit. Wait for the worker processes to exit.
+            pool.close()
+            pool.join()
 
-    def __predict_chunked(self, xs, chunks, parallel=False, verbose=False,
-                          **kwargs):
+            # Retrieve optimised models..
+            for i, result in enumerate(results):
+                self.__models[i] = results[i].get()
+
+        if verbose:
+            print 'Elapsed time {0:.3f}s'.format(time() - t0)
+
+    def predict(self, xs, chunks=None, verbose=True):
 
         # Pre-allocate memory.
+        t0 = time()
         K = len(self.__labels)
         p = np.zeros((xs.shape[0], K))
         f = np.zeros((xs.shape[0], K))
         v = np.zeros((xs.shape[0], K))
 
-        if not parallel:
+        # Perform inference on a SINGLE process.
+        if not self.__threads:
             for i, idx in chunk_index(len(xs), chunks):
                 if verbose:
-                    msg = '   completed {0:>5.1f}%'
-                    print msg.format(float(i) / chunks * 100)
+                    msg = 'Completed {0:>5.1f}%'
+                    print msg.format(float(i + 1) / chunks * 100)
 
                 # Perform inference on chunk.
                 p[idx, :], f[idx, :], v[idx, :] = _gpc_predict(self.__models,
-                                                               xs,
-                                                               verbose=False)
+                                                               xs[idx, :])
 
+        # Perform inference on MULTIPLE processes.
         else:
-            pool = mp.Pool(processes=parallel)
-            print 'pool started'
+            pool = mp.Pool(processes=self.__threads)
 
             results = list()
             for i, idx in chunk_index(len(xs), chunks):
-                print 'Starting thread %i' % i
-                args = (self.__models, xs[idx, :], False,)
+                args = (self.__models, xs[idx, :],)
                 result = pool.apply_async(_gpc_predict, args=args)
                 results.append(result)
 
@@ -264,27 +301,11 @@ class GPClassification(object):
             for i, idx in chunk_index(len(xs), chunks):
                 p[idx, :], f[idx, :], v[idx, :] = results[i].get()
 
-        if self.__verbose:
-            sys.stdout.write('\n')
-
-        return p, f, v
-
-    def predict(self, xs, chunks=None, parallel=None):
-
-        # Perform inference in one block.
-        t0 = time()
-        if not chunks:
-            p, f, v = self.__predict(xs, verbose=self.__verbose)
-
-        # Iterate through the data in chunks performing inference.
-        else:
-            p, f, v = self.__predict_chunked(xs, chunks, parallel=parallel,
-                                             verbose=self.__verbose)
-
-        if self.__verbose:
+        if verbose:
             print '\nElapsed time {0:.3f}s'.format(time() - t0)
 
         return p, f, v
+
 
 # --------------------------------------------------------------------------- #
 #                             Plotting Functions
