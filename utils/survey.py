@@ -104,16 +104,17 @@ def plot_AUV_classes(raster, limits,
                      **kwargs):
     """Plot AUV classes on top of bathymetry."""
 
+    # Allow data to be sub-sampled.
     easting = easting[::subsample]
     northing = northing[::subsample]
     classes = classes[::subsample]
 
     # Plot bathymetry raster (in grey-scale).
-    ax = bathymetry.plot_raster(raster, limits,
-                                cmap=cm.bone,
-                                clabel='depth (m)')
+    ax = bathymetry.plot_raster(raster, extent=limits,
+                                clabel='depth (m)',
+                                cmap=cm.bone)
 
-    # Plot classified easting and northings. Each class is plotted in a new
+    # Plot classified Easting and Northings. Each class is plotted in a new
     # colour.
     scax = list()
     sctitle = list()

@@ -13,7 +13,7 @@ from numpy import genfromtxt
 if __name__ == '__main__':
 
     # Location of input CSVs.
-    INPUT_PREFIX = '/media/Data/Code/survey_planning/data/bathymetry_'
+    INPUT_PREFIX = '/media/Data/Code/survey_planning/data/bathymetry'
 
     # Location of output pickles.
     OUTPUT_PREFIX = '/media/Data/Code/survey_planning/data/bathymetry/'
@@ -26,8 +26,12 @@ if __name__ == '__main__':
     print 'Creating bathymetry:'
     for info in ['index', 'depth', 'resolution', 'x_bins', 'y_bins']:
 
-        info_path = INPUT_PREFIX + '{0}.csv'.format(info)
-        data = genfromtxt(info_path, delimiter=',')
+        info_path = INPUT_PREFIX + '_{0}.csv'.format(info)
+        if os.path.exists(info_path):
+            data = genfromtxt(info_path, delimiter=',')
+        else:
+            msg = "The file '{0}' does not exist"
+            raise Exception(msg.format(info_path))
 
         if info == 'index':
             data = data.astype(int)
@@ -49,7 +53,7 @@ if __name__ == '__main__':
 
         # Iterate through features and store in dictionary.
         t0 = time.time()
-        for field in ['aspect', 'rugosity', 'slope', 'processed']:
+        for field in ['index', 'aspect', 'rugosity', 'slope']:
 
             # Create path to feature.
             feature_path = INPUT_PREFIX
@@ -57,7 +61,13 @@ if __name__ == '__main__':
             feature_path += '.csv'
 
             # Load data into dictionary.
-            data = genfromtxt(feature_path, delimiter=',')
+            if os.path.exists(feature_path):
+                data = genfromtxt(feature_path, delimiter=',')
+                if field == 'index':
+                    data = data.astype(int)
+            else:
+                msg = "The file '{0}' does not exist"
+                raise Exception(msg.format(feature_path))
 
             #  Create path to output.
             output_path = OUTPUT_PREFIX + '{0:0>3}/'.format(scale)

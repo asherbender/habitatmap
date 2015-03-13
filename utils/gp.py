@@ -322,8 +322,8 @@ def plot_probability(p, idx, shape, K, blending='flat', cmap=cm.hsv):
     colours = colours[c, :]
 
     # Copy colour data into raster.
-    rows, cols = np.unravel_index(idx, shape.shape)
-    raster = np.zeros(shape.shape)[:, :, np.newaxis].repeat(4, axis=2)
+    rows, cols = np.unravel_index(idx, shape['shape'], order='F')
+    raster = np.zeros(shape['shape'])[:, :, np.newaxis].repeat(4, axis=2)
     for i in range(3):
         raster[rows, cols, i] = colours[:, i]
 
@@ -335,7 +335,9 @@ def plot_probability(p, idx, shape, K, blending='flat', cmap=cm.hsv):
     elif blending == 'to_colour':
         raster[rows, cols, -1] = np.max(p, axis=1)
 
-    return bathymetry.plot_raster(raster, shape.limits)
+    print raster.shape
+    return plt.imshow(raster)
+    # return bathymetry.plot_raster(raster, extent=shape['extent'])
 
 
 def plot_variance(V, idx, shape, K, cols=1, titles=None, clabels=None,
@@ -353,9 +355,9 @@ def plot_variance(V, idx, shape, K, cols=1, titles=None, clabels=None,
         ax = plt.subplot(rows, cols, i + 1)
 
         # Reshape feature vector for plotting.
-        raster = np.nan * np.zeros(shape.numel)
+        raster = np.nan * np.zeros(shape['size'])
         raster[idx] = V[:, i]
-        raster = raster.reshape(shape.shape)
+        raster = raster.reshape(shape['shape'], order='F')
 
         # Add titles.
         if titles is not None:
@@ -371,7 +373,7 @@ def plot_variance(V, idx, shape, K, cols=1, titles=None, clabels=None,
                 kwargs['clabel'] = clabels[i]
 
         # Plot raster.
-        bathymetry.plot_raster(raster, shape.limits, ax=ax, **kwargs)
+        bathymetry.plot_raster(raster, extent=shape['extent'], ax=ax, **kwargs)
         axs.append(ax)
 
     return axs

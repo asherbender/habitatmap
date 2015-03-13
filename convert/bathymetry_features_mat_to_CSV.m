@@ -44,7 +44,7 @@ for i = 1:length(FILES)
     tic();
     fprintf('    writing processed...  ')
     processed = find(processed) - 1;
-    dlmwrite([PREFIX, sprintf('_processed_%03i.csv', neighbours)], ...
+    dlmwrite([PREFIX, sprintf('_index_%03i.csv', neighbours)], ...
              processed, 'precision', '%i')
     toc();
     
