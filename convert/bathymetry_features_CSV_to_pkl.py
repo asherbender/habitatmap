@@ -13,10 +13,10 @@ from numpy import genfromtxt
 if __name__ == '__main__':
 
     # Location of input CSVs.
-    INPUT_PREFIX = '/media/Data/Code/survey_planning/features/ohara_2008_bathymetry'
+    INPUT_PREFIX = '/media/Data/Code/survey_planning/data/bathymetry_'
 
     # Location of output pickles.
-    OUTPUT_PREFIX = '/media/Data/Code/survey_planning/features/'
+    OUTPUT_PREFIX = '/media/Data/Code/survey_planning/data/bathymetry/'
 
     # Scales to convert.
     SCALES = [2, 8, 16]
@@ -26,7 +26,7 @@ if __name__ == '__main__':
     print 'Creating bathymetry:'
     for info in ['index', 'depth', 'resolution', 'x_bins', 'y_bins']:
 
-        info_path = INPUT_PREFIX + '_{0}.csv'.format(info)
+        info_path = INPUT_PREFIX + '{0}.csv'.format(info)
         data = genfromtxt(info_path, delimiter=',')
 
         if info == 'index':

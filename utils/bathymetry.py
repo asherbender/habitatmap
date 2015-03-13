@@ -1,79 +1,274 @@
+"""Rasterised bathymetry tools
+
+The rasterised bathymetry module provides methods and objects designed to
+manipulate bathymetry rasters.
+
+The main function responsible for loading bathymetry files is:
+
+    - :py:func:load_bathymetry
+
+the following helper functions provide convenient method for opening and
+displaying information about the bathymetry:
+
+    - :py:func:load_bathymetry_file
+    - :py:func:load_bathymetry_meta
+
+.. sectionauthor:: Asher Bender <a.bender@acfr.usyd.edu.au>
+.. codeauthor:: Asher Bender <a.bender@acfr.usyd.edu.au>
+
+"""
+import os
 import pickle
+from bz2 import BZ2File
+
 import numpy as np
 from scipy.stats import mode
+
 import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
-class Raster(object):
-    """Container for raster data."""
+def load_bathymetry_file(fname):
+    """Load bathymetry data from the disk.
 
-    def __init__(self, raster, x_bins, y_bins, resolution):
+    :py:func:load_bathymetry_file loads BZ2-compressed, pickled bathymetry data
+    from the disk.
 
-        self.raster = raster
-        self.x_bins = x_bins.flatten()
-        self.y_bins = y_bins.flatten()
-        self.resolution = resolution
+    Args:
+        fname (str): Path to bathymetry file.
 
-    @property
-    def shape(self):
-        return (self.rows, self.cols)
+    Returns:
+        :class:`np.array`: Array like object containing pickled bathymetry
+                           data.
 
-    @property
-    def rows(self):
-        return self.y_bins.size
+    Raises:
+        Exception: If the file could not be opened for an unexpected reason.
+        IOError: If the file does not exist.
 
-    @property
-    def cols(self):
-        return self.x_bins.size
+    """
 
-    @property
-    def numel(self):
-        return self.rows * self.cols
+    # File exists, attempt to open.
+    if os.path.isfile(fname):
+        try:
+            with BZ2File(fname, 'r') as f:
+                return pickle.load(f)
 
-    @property
-    def x_lim(self):
-        return [self.x_bins.min(), self.x_bins.max()]
+        # Could not open file, re-throw error.
+        except Exception as e:
+            msg = 'Could not open the file {0}. '
+            msg += "Ensure this is a valid '.pkl.bz2' file. "
+            msg += 'The error thrown was:\n\n{2}'
+            raise Exception(msg.format(fname, str(e)))
 
-    @property
-    def y_lim(self):
-        return [self.y_bins.min(), self.y_bins.max()]
-
-    @property
-    def limits(self):
-        r = self.resolution / 2.0
-        return [self.x_lim[0] - r, self.x_lim[1] + r,
-                self.y_lim[0] - r, self.y_lim[1] + r]
+    # The bathymetry information does not exist. Throw error.
+    else:
+        msg = 'Could not locate the required bathymetry information: '
+        msg += "'{0}'."
+        raise IOError(fname)
 
 
-def load_bathymetry(bathymetry_file, verbose=True):
-    """Load bathymetry data from pickle object."""
+def load_bathymetry_meta(bathymetry_path, verbose=True):
+    """Load bathymetry meta-data from the disk.
 
-    # Load bathymetry dictionary from pickle file.
-    with open(bathymetry_file, 'rb') as f:
-        bathymetry = pickle.load(f)
+    Loads bathymetry meta-data from a path WITHOUT loading depth
+    information. :py:func:load_bathymetry_meta expects the data to be stored in
+    BZ2 compressed pickle files in the following components:
 
-    # Convert dictionary to object.
-    bathymetry = Raster(bathymetry['Z'],
-                        bathymetry['x_bins'],
-                        bathymetry['y_bins'],
-                        bathymetry['resolution'])
+        bathymetry_path/
+            \____resolution.pkl.bz2
+            \____x_bins.pkl.bz2
+            \____y_bins.pkl.bz2
+
+    where the .pkl.bz2 files:
+
+        - resolution: Contains a single float specifying the (square) size of
+                      each bathymetry pixel in metres.
+
+        - x_bins: Contains a numpy vector storing the local easting, in metres,
+                  for each column of bathymetry pixels
+
+        - y_bins: Contains a numpy vector storing the local northing, in
+                  metres, for each row of bathymetry pixels
+
+    The bathymetry is returned as a dictionary containing the following key,
+    value pairs:
+
+        info = {'x_bins': array(N,),
+                'y_bins': array(M,),
+                'x_lim': [min(bathy['x_bins']), min(bathy['x_bins'])],
+                'y_lim': [min(bathy['y_bins']), min(bathy['y_bins'])],
+                'extent': [bathy['y_bins'][0] - bathy['resolution']/2,
+                           bathy['y_bins'][1] + bathy['resolution']/2,
+                           bathy['x_bins'][0] - bathy['resolution']/2,
+                           bathy['x_bins'][1] + bathy['resolution']/2],
+                'rows': M,
+                'cols': N,
+                'size': M * N,
+                'resolution': float()}
+
+    Args:
+        bathymetry_path (str): Path to where bathymetry data is stored.
+        verbose (bool): If set to True the contents of the bathymetry
+                        information dictionary will be summarised on stdout.
+
+    Returns:
+        :class:`dict`: Dictionary object containing the bathymetry meta-data.
+
+    Raises:
+        Exception: If the a file could not be opened for an unexpected reason.
+        IOError: If the path or a required bathymetry file does not exist.
+
+    """
+
+    # Ensure the path exists.
+    if not os.path.exists(bathymetry_path):
+        raise IOError('Could not locate the path: {0}'.format(bathymetry_path))
+
+    # Iterate through bathymetry information and load into dictionary.
+    bathy = dict()
+    for info in ['resolution', 'x_bins', 'y_bins']:
+        fname = os.path.join(bathymetry_path, info + '.pkl.bz2')
+        try:
+            bathy[info] = load_bathymetry_file(fname)
+        except:
+            raise
+
+    # Store 'convenience' fields.
+    bathy['y_lim'] = [bathy['x_bins'].min(), bathy['x_bins'].max()]
+    bathy['x_lim'] = [bathy['y_bins'].min(), bathy['y_bins'].max()]
+    bathy['rows'] = bathy['y_bins'].size
+    bathy['cols'] = bathy['x_bins'].size
+    bathy['size'] = bathy['rows'] * bathy['cols']
+
+    # Consider X-bin and Y-bin values to mark the centre of bathymetry pixels.
+    radius = bathy['resolution'] / 2.0
+    bathy['extent'] = [bathy['y_lim'][0] - radius, bathy['y_lim'][1] + radius,
+                       bathy['x_lim'][0] - radius, bathy['x_lim'][1] + radius]
 
     # Summarise bathymetry data.
     if verbose:
         print 'Bathymetry Summary:'
-        print '    Z:           [{0[0]}x{0[1]}]'.format(bathymetry.shape)
-        print '    X-bins:      [{0[0]},]'.format(bathymetry.x_bins.shape)
-        print '    Y-bins:      [{0[0]},]'.format(bathymetry.y_bins.shape)
-        print '    X-lim:       [{0[0]}, {0[1]}]'.format(bathymetry.x_lim)
-        print '    Y-lim:       [{0[0]}, {0[1]}]'.format(bathymetry.y_lim)
-        print '    rows:        {0}'.format(bathymetry.rows)
-        print '    cols:        {0}'.format(bathymetry.cols)
-        print '    numel:       {0}'.format(bathymetry.numel)
-        print '    resolution:  {0}'.format(bathymetry.resolution)
+        print '    X-bins:      [{0[0]},]'.format(bathy['x_bins'].shape)
+        print '    Y-bins:      [{0[0]},]'.format(bathy['y_bins'].shape)
+        print '    X-lim:       [{0[0]}, {0[1]}]'.format(bathy['x_lim'])
+        print '    Y-lim:       [{0[0]}, {0[1]}]'.format(bathy['y_lim'])
+        print '    extent:      [{0[0]}, {0[1]}, {0[2]}, {0[3]}]'.format(bathy['extent'])
+        print '    rows:        {0}'.format(bathy['rows'])
+        print '    cols:        {0}'.format(bathy['cols'])
+        print '    size:        {0}'.format(bathy['size'])
+        print '    resolution:  {0}'.format(bathy['resolution'])
 
-    return bathymetry
+    return bathy
+
+
+def load_bathymetry(bathymetry_path, invalid=np.nan, dtype=np.float,
+                    verbose=True):
+    """Load bathymetry raster from the disk.
+
+    Loads bathymetry information from a path. :py:func:load_bathymetry expects
+    the data to be stored in BZ2 compressed pickle files in the following
+    components:
+
+        bathymetry_path/
+            \____depth.pkl.bz2
+            \____index.pkl.bz2
+            \____resolution.pkl.bz2
+            \____x_bins.pkl.bz2
+            \____y_bins.pkl.bz2
+
+    where the .pkl.bz2 files:
+
+        - depth: Contains a numpy vector storing valid bathymetric
+                 data. Out-of-range or invalid returns are NOT stored. Each
+                 element in the 'depth' vector corresponds to an element in the
+                 index 'vector' - this position information is used to
+                 reconstruct the raster.
+
+        - index: Contains a numpy vector of integers specifying the
+                 column-major order (Fortran-like) index ordering of the
+                 bathymetry pixels. Note that the shape of the raster is given
+                 by the size of 'x_bins' (cols) and 'y_bins' (rows).
+
+        - resolution: Contains a single float specifying the (square) size of
+                      each bathymetry pixel in metres.
+
+        - x_bins: Contains a numpy vector storing the local easting, in metres,
+                  for each column of bathymetry pixels
+
+        - y_bins: Contains a numpy vector storing the local northing, in
+                  metres, for each row of bathymetry pixels
+
+    The bathymetry is returned as a dictionary containing the following key,
+    value pairs:
+
+        bathymetry = {'depth': array(M, N),
+                      'x_bins': array(N,),
+                      'y_bins': array(M,),
+                      'x_lim': [min(bathy['x_bins']), min(bathy['x_bins'])],
+                      'y_lim': [min(bathy['y_bins']), min(bathy['y_bins'])],
+                      'extent': [bathy['y_bins'][0] - bathy['resolution']/2,
+                                 bathy['y_bins'][1] + bathy['resolution']/2,
+                                 bathy['x_bins'][0] - bathy['resolution']/2,
+                                 bathy['x_bins'][1] + bathy['resolution']/2],
+                      'rows': M,
+                      'cols': N,
+                      'size': M * N,
+                      'resolution': float()}
+
+    Args:
+        bathymetry_path (str): Path to where bathymetry data is stored.
+        invalid (value): Value to used to represent pixels where bathymetry is
+                         not available.
+        dtype (np.dtype): Data type used to store bathymetry raster.
+        verbose (bool): If set to True the contents of the bathymetry
+                        dictionary will be summarised on stdout.
+
+    Returns:
+        :class:`dict`: Dictionary object containing the bathymetry data.
+
+    Raises:
+        Exception: If the a file could not be opened for an unexpected reason.
+        IOError: If the path or a required bathymetry file does not exist.
+
+    """
+
+    # Attempt to load bathymetry meta-data.
+    try:
+        bathy = load_bathymetry_meta(bathymetry_path, verbose=False)
+    except:
+        raise
+
+    # Iterate through bathymetry information and load into dictionary.
+    for info in ['depth', 'index']:
+        fname = os.path.join(bathymetry_path, info + '.pkl.bz2')
+        try:
+            bathy[info] = load_bathymetry_file(fname)
+        except:
+            raise
+
+    # Copy observed values into full raster. Note that the indices are stored
+    # in column major order (Fortran-like).
+    depth = invalid * np.ones((bathy['size']))
+    depth[bathy['index']] = bathy['depth']
+    bathy['depth'] = depth.reshape((bathy['rows'], bathy['cols']), order='F')
+    del(bathy['index'])
+
+    # Summarise bathymetry data.
+    if verbose:
+        print 'Bathymetry Summary:'
+        print '    depth:       [{0[0]}x{0[1]}]'.format(bathy['depth'].shape)
+        print '    X-bins:      [{0[0]},]'.format(bathy['x_bins'].shape)
+        print '    Y-bins:      [{0[0]},]'.format(bathy['y_bins'].shape)
+        print '    X-lim:       [{0[0]}, {0[1]}]'.format(bathy['x_lim'])
+        print '    Y-lim:       [{0[0]}, {0[1]}]'.format(bathy['y_lim'])
+        print '    extent:      [{0[0]}, {0[1]}, {0[2]}, {0[3]}]'.format(bathy['extent'])
+        print '    rows:        {0}'.format(bathy['rows'])
+        print '    cols:        {0}'.format(bathy['cols'])
+        print '    size:        {0}'.format(bathy['size'])
+        print '    resolution:  {0}'.format(bathy['resolution'])
+
+    return bathy
 
 
 def load_features(features, path_prefix, transform=False, verbose=True):
@@ -282,17 +477,51 @@ def feasible_region(template, raster):
 # --------------------------------------------------------------------------- #
 
 
-def plot_raster(raster, limits, ax=None, title=None, clabel=None,
-                no_label=False, no_ticks=False, horz_cbar=False,
-                **kwargs):
-    """Plot raster."""
+def plot_raster(raster, ax=None, extent=None, title=None, clabel=None,
+                no_cbar=False, no_axis_label=False, no_ticks=False,
+                horz_cbar=False, **kwargs):
+    """Plot raster as an image.
+
+    Args:
+        raster (numpy.array): (MxN) raster to plot.
+        ax (matplotlib.axes.Axes): Axes to plot raster. If set to `None`, a new
+                                   axis will be created for plotting.
+        extent (list): extent of plot [x_min, x_max, y_min, y_max] in Cartesian
+                       space. If provided the X and Y labels will be labelled
+                       automatically.
+        title (str): Title of plot. If set to `None`, no title will be printed.
+        clabel (str): Label of colour bar. If set to `None`, no colour bar
+                      label will be rendered.
+        no_cbar (bool): If set to `True` the colour bar will NOT be rendered.
+                        If set to `False` the colour bar WILL be rendered.
+        no_axis_label (bool): If set to `True` the X/Y labels will NOT be
+                              rendered.  If set to `False` the X/Y labels WILL
+                              be rendered.
+
+        no_ticks (bool): If set to `True` the X/Y tick marks will NOT be
+                              rendered.  If set to `False` the X/Y tick marks
+                              WILL be rendered.
+        horz_cbar (bool): If set to `True` the colour bar will rendered
+                          horizontally below the figure. This option is best
+                          used with `no_axis_label=True` and `no_ticks=True`.
+        **kwargs (any): Are passed into matplotlib.pyplot.imshow when the
+                        raster is rendered.
+
+    Returns:
+        :class:`matplotlib.axes.Axes`: axes containing raster image.
+
+    """
 
     # Create axes if none is provided.
     if ax is None:
         ax = plt.subplot(111)
 
+    # Ensure the raster is plotted in 'real-world' co-ordinates.
+    if extent is not None:
+        kwargs['extent'] = extent
+
     # Plot raster.
-    im = ax.imshow(raster, extent=limits, **kwargs)
+    im = ax.imshow(raster, **kwargs)
 
     # Assign title to image.
     if title:
@@ -300,7 +529,7 @@ def plot_raster(raster, limits, ax=None, title=None, clabel=None,
 
     # Label axes.
     plt.grid('on')
-    if not no_label:
+    if (extent is not None) and not no_axis_label:
         plt.xlabel('Local Easting (m)')
         plt.ylabel('Local Northing (m)')
 
@@ -310,24 +539,27 @@ def plot_raster(raster, limits, ax=None, title=None, clabel=None,
         ax.set_yticklabels([])
 
     # Create colour bar.
-    if clabel is not None:
+    if not no_cbar:
 
         # Vertical colour bar.
         if not horz_cbar:
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.05)
             cbar = plt.colorbar(im, cax=cax)
-            cbar.set_label(clabel, rotation=90)
+            if clabel is not None:
+                cbar.set_label(clabel, rotation=90)
 
         # Horizontal colour bar.
         else:
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("bottom", size="5%", pad=0.05)
             cbar = plt.colorbar(im, cax=cax, orientation="horizontal")
-            cbar.set_label('', rotation=0)
+            if clabel is not None:
+                cbar.set_label('', rotation=0)
 
-    # Force limits of plot.
-    ax.axis(limits)
+    # Force extent of plot.
+    if extent is not None:
+        ax.axis(extent)
 
     return ax
 

@@ -23,13 +23,13 @@ FILES = {'/media/Data/PhD/Sand_Box/matlab/unstable/IROS_2012/data/bathymetry_fea
          '/media/Data/PhD/Sand_Box/matlab/unstable/IROS_2012/data/bathymetry_features/ohara_2008_bathymetry_016.mat' };
      
 % Output path.
-PREFIX = '/media/Data/Code/survey_planning/features/ohara_2008_bathymetry';
+PREFIX = '/media/Data/Code/survey_planning/data/bathymetry';
 
 % Load bathymetry.
 fprintf('Loading: %s\n', BATHY)
 load(BATHY)
 
-dlmwrite([PREFIX, '_index.csv'], find(isnan(bathymetry.Z) == false), 'precision', '%i')
+dlmwrite([PREFIX, '_index.csv'], find(isnan(bathymetry.Z) == false) - 1, 'precision', '%i')
 dlmwrite([PREFIX, '_depth.csv'], bathymetry.Z(isnan(bathymetry.Z) == false), 'precision', '%1.24f')
 dlmwrite([PREFIX, '_x_bins.csv'], bathymetry.X_bins, 'precision', '%1.24f')
 dlmwrite([PREFIX, '_y_bins.csv'], bathymetry.Y_bins, 'precision', '%1.24f')
