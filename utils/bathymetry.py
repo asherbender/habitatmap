@@ -30,7 +30,6 @@ from bz2 import BZ2File
 import numpy as np
 from scipy.stats import mode
 
-import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
@@ -559,59 +558,6 @@ def sparse_to_raster(index, sparse, rows, cols, invalid=np.nan):
     return raster.reshape((rows, cols), order='F')
 
 
-def intersect(A, B, index=False):
-    """Find the intersection of two arrays.
-
-    Return the sorted, unique values that are in both of the input arrays. The
-    input arrays `A` and `B` must be sorted and unique. Where this function
-    differs from :py:func:np.intersect1d is that an index array for each input
-    can optionally be returned. For example when using:
-
-        C, IA, IB = intersect(A, B, index=True)
-
-    the following is true:
-
-        C = A[IA] and C = B[IB]
-
-    Args:
-        A (np.array): First input array.
-        B (np.array): Second input array.
-        index (bool, optional): If set to `True` an additional two arrays will
-            be returned. The first array is a boolean mask the same length as A
-            that is `True` where an element of A is in B and `False` otherwise.
-            The second array is a boolean mask the same length as B that is
-            `True` where an element of B is in A and `False` otherwise.
-
-    Returns:
-        np.array: Sorted array of common and unique elements. If index=True, a
-                  tuple is returned where the first element is the set
-                  intersection. The second element is a boolean mask to the
-                  first array such that C = A[IA]. The last element is a
-                  boolean mask to the second array such that C = B[IB].
-
-
-    Raises:
-        Exception: If either of the input arrays are not sorted or unique.
-
-    """
-
-    if not np.all(A == np.unique(A)):
-        raise Exception('The first input must be sorted and unique.')
-
-    if not np.all(B == np.unique(B)):
-        raise Exception('The second input must be sorted and unique.')
-
-    # Return a boolean array the same length as A that is True where an element
-    # of A is in B and False otherwise (vice-versa for B).
-    index_A = np.in1d(A, B, assume_unique=False)
-    index_B = np.in1d(B, A, assume_unique=False)
-
-    if not index:
-        return A[index_A]
-    else:
-        return A[index_A], index_A, index_B
-
-
 def cartesian_to_bathymetry(bathymetry, easting, northing):
     """Convert Cartesian co-ordinates to bathymetry row, column subscripts.
 
@@ -875,69 +821,3 @@ def plot_raster(raster, ax=None, extent=None, title=None, clabel=None,
         ax.axis(extent)
 
     return ax
-
-
-# --------------------------------------------------------------------------- #
-#                                Consider moving
-# --------------------------------------------------------------------------- #
-
-def feasible_region(template, raster):
-
-    # Get limits of raster and template.
-    x_min = template[:, 0].min()
-    x_max = raster.cols - template[:, 0].max()
-    y_max = raster.rows - template[:, 1].min()
-    y_min = template[:, 1].max()
-
-    # Mask off rows and columns where the template would 'fall off' the raster.
-    row_mask = np.arange(raster.rows)
-    col_mask = np.arange(raster.cols)
-    feasible = np.ones(raster.shape, dtype=bool)
-    feasible[:, col_mask < x_min] = False
-    feasible[:, col_mask > x_max] = False
-    feasible[row_mask < y_min, :] = False
-    feasible[row_mask > y_max, :] = False
-
-    return feasible
-
-
-def plot_feasible_region(feasible, raster, limits, **kwargs):
-    """Overlay feasible region on bathymetry (unfeasible in red)."""
-
-    # Convert feasible region into an RGB image.
-    feasible = feasible[:, :, np.newaxis].repeat(3, axis=2)
-    feasible[:, :, 0] = ~feasible[:, :, 0]
-    feasible[:, :, 2] = 0
-
-    # Plot bathymetry in gray-scale and feasible region on top.
-    ax = plot_raster(raster, limits, cmap=cm.gray)
-    ax.imshow(feasible, extent=limits, interpolation='none', **kwargs)
-
-    return ax
-
-
-# plt.imshow(sub_index)
-
-# sub_raster = utils.bathymetry.meta_from_bins(bathymetry['x_bins'][sub_cols],
-#                                              bathymetry['y_bins'][sub_rows])
-
-
-# cols_grid, rows_grid = np.meshgrid(sub_cols, sub_rows)
-
-
-# # Convert subsampled data to square matrix.
-# sub_to_full = np.ravel_multi_index([rows_grid,
-#                                     cols_grid],
-#                                    dims=bathymetry['shape'], order='F')
-
-# # Ensure unique values.
-# U = np.unique(feature_index)
-# feature_to_sub = np.where(np.in1d(U, sub_to_full))[0]
-
-
-# # Mask off values which do not occur in feature_index.
-# valid = np.in1d(sub_to_full, U).reshape(sub_to_full.shape, order='F')
-# sub_to_full[~valid] = -1
-
-# # Linear index
-# sub_index = np.where(sub_to_full.flatten() >= 0)
