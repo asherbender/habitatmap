@@ -20,7 +20,7 @@ Raster data can be visualised using:
     - :py:func:plot_raster
 
 .. sectionauthor:: Asher Bender <a.bender@acfr.usyd.edu.au>
-.. codeauthor:: Asher Bender <a.bender@acfr.usyd.edu.au>
+.. codeauthor:: Asher Bender <a.bender@acfr.usyd.edu.au>Email
 
 """
 import os

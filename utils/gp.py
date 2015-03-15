@@ -1,11 +1,13 @@
+import os
 import sys
 import copy
+import time
 import bathymetry
-from time import time
+import parallelisation
+import multiprocessing as mp
 
 # Load linear algebra/science libraries.
 import numpy as np
-import multiprocessing as mp
 from sklearn.grid_search import ParameterGrid
 
 import matplotlib.cm as cm
@@ -34,7 +36,7 @@ def chunk_index(length, number_chunks):
 def gp_train_grid(model, param_grid, verbose=True):
     """Optimise GP hyper-parameters from a grid of starting locations."""
 
-    t0 = time()
+    t0 = time.time()
     if verbose:
         print 'Optimising hyper-parameters:'
 
@@ -66,7 +68,7 @@ def gp_train_grid(model, param_grid, verbose=True):
             print 'f = {0:>10.3f}'.format(-log_likelihood)
 
     if verbose:
-        print '\nElapsed time {0:.3f}s'.format(time() - t0)
+        print '\nElapsed time {0:.3f}s'.format(time.time() - t0)
 
     return utility_model
 
@@ -78,7 +80,7 @@ def gpr_chunk_inference(chunks, xs, model, verbose=True):
     f_xs = np.zeros((len(xs), 1))
     V_xs = np.zeros((len(xs), 1))
 
-    t0 = time()
+    t0 = time.time()
     if verbose:
         print 'Performing inference:'
 
@@ -89,15 +91,15 @@ def gpr_chunk_inference(chunks, xs, model, verbose=True):
         f_xs[idx, :], V_xs[idx, :] = model.predict(xs[idx, :])
 
     if verbose:
-        print '\nElapsed time {0:.3f}s'.format(time() - t0)
+        print '\nElapsed time {0:.3f}s'.format(time.time() - t0)
 
     return f_xs, V_xs
 
 
-def _gpc_optimise(model, iterations, max_iterations, verbose):
+def _gpc_optimise(model, iterations, max_iterations, verbose=False):
 
-    if verbose:
-        print 'Optimising parameters for {0}'.format(model.name)
+    # Retrieve process ID.
+    pid = os.getpid()
 
     # Perform several optimisation trials.
     for i in range(iterations):
@@ -107,17 +109,18 @@ def _gpc_optimise(model, iterations, max_iterations, verbose):
         model.optimize('bfgs', max_iters=max_iterations)
 
         if verbose:
-            msg = '    iteration {0:>3n} of {1:>3n}, f = {2:>10.4f}'
-            print msg.format(i + 1, iterations, model.log_likelihood())
-
-    if verbose:
-        print ''
+            msg = 'PID {0:n}: {1}, iteration {2:>3n} of {3:>3n}, f = {4:>10.4f}'
+            print msg.format(pid, model.name, i + 1, iterations,
+                             model.log_likelihood())
 
     return model
 
 
-def _gpc_predict(models, xs):
+def _gpc_predict(models, xs, verbose=False):
     """Function for training Gaussian process classifier."""
+
+    # Retrieve process ID.
+    pid = os.getpid()
 
     # Pre-allocate memory.
     K = len(models)
@@ -127,6 +130,9 @@ def _gpc_predict(models, xs):
 
     # Iterate through models.
     for i, model in enumerate(models):
+        if verbose:
+            msg = 'PID {0:n}: {1}, Performing inference ({2} observations)'
+            print msg.format(pid, model.name, xs.shape[0])
 
         # Perform inference in the latent function space and then squash
         # the output through the likelihood function.
@@ -227,7 +233,7 @@ class GPClassification(object):
         """Optimise the kernel parameters."""
 
         # Iterate through models.
-        t0 = time()
+        t0 = time.time()
 
         # Perform optimisation on a SINGLE process.
         if not self.__threads:
@@ -239,32 +245,30 @@ class GPClassification(object):
 
         # Perform optimisation on MULTIPLE processes.
         else:
-            pool = mp.Pool(processes=self.__threads)
 
-            results = list()
+            # Create list of jobs to execute in parallel.
+            jobs = list()
             for i, model in enumerate(self.__models):
+                jobs.append({'target': _gpc_optimise,
+                             'args': [model,
+                                      iterations,
+                                      max_iterations,
+                                      self.__verbose]})
 
-                args = (model, iterations, max_iterations, False)
-                result = pool.apply_async(_gpc_optimise, args=args)
-                results.append(result)
+            # Send jobs to queue.
+            output = parallelisation.pool(jobs, num_processes=self.__threads)
 
-            # Prevent any more tasks from being submitted to the pool. Once all
-            # the tasks have been completed the worker processes will
-            # exit. Wait for the worker processes to exit.
-            pool.close()
-            pool.join()
-
-            # Retrieve optimised models..
-            for i, result in enumerate(results):
-                self.__models[i] = results[i].get()
+            # Collect and store output.
+            for model in output:
+                self.__models[i] = model
 
         if verbose:
-            print 'Elapsed time {0:.3f}s'.format(time() - t0)
+            print 'Elapsed time {0:.3f}s'.format(time.time() - t0)
 
     def predict(self, xs, chunks=None, verbose=True):
 
         # Pre-allocate memory.
-        t0 = time()
+        t0 = time.time()
         K = len(self.__labels)
         p = np.zeros((xs.shape[0], K))
         f = np.zeros((xs.shape[0], K))
@@ -283,26 +287,24 @@ class GPClassification(object):
 
         # Perform inference on MULTIPLE processes.
         else:
-            pool = mp.Pool(processes=self.__threads)
 
-            results = list()
+            # Create list of jobs to execute in parallel.
+            jobs = list()
             for i, idx in chunk_index(len(xs), chunks):
-                args = (self.__models, xs[idx, :],)
-                result = pool.apply_async(_gpc_predict, args=args)
-                results.append(result)
+                jobs.append({'target': _gpc_predict,
+                             'args': [self.__models,
+                                      xs[idx, :],
+                                      self.__verbose]})
 
-            # Prevent any more tasks from being submitted to the pool. Once all
-            # the tasks have been completed the worker processes will
-            # exit. Wait for the worker processes to exit.
-            pool.close()
-            pool.join()
+            # Send jobs to queue.
+            output = parallelisation.pool(jobs, num_processes=self.__threads)
 
             # Reconstruct output.
             for i, idx in chunk_index(len(xs), chunks):
-                p[idx, :], f[idx, :], v[idx, :] = results[i].get()
+                p[idx, :], f[idx, :], v[idx, :] = output[i]
 
         if verbose:
-            print '\nElapsed time {0:.3f}s'.format(time() - t0)
+            print '\nElapsed time {0:.3f}s'.format(time.time() - t0)
 
         return p, f, v
 
