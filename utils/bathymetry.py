@@ -34,6 +34,29 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
+def check_all_files_exist(file_list):
+    """Check a list of files existence. Return True if all files exist.
+
+    Args:
+        file_list (list): List of file paths to check for existence.
+
+    Returns:
+        bool: `True` if all files in the list exist. `False` otherwise.
+
+    """
+
+    # Assume all files exist.
+    exist = True
+
+    # Iterate through list of files and test to ensure they exist.
+    for f in file_list:
+        if not os.path.isfile(f):
+            exist = False
+            break
+
+    return exist
+
+
 def load_bathymetry_file(fname):
     """Load bathymetry data from the disk.
 
@@ -47,8 +70,8 @@ def load_bathymetry_file(fname):
         np.array: Array like object containing pickled bathymetry data.
 
     Raises:
-        Exception: If the file could not be opened for an unexpected reason.
-        IOError: If the file does not exist.
+        IOError: If the file does not exist or could not be opened for an
+            unexpected reason.
 
     """
 
@@ -63,7 +86,7 @@ def load_bathymetry_file(fname):
             msg = 'Could not open the file {0}. '
             msg += "Ensure this is a valid '.pkl.bz2' file. "
             msg += 'The error thrown was:\n\n{2}'
-            raise Exception(msg.format(fname, str(e)))
+            raise IOError(msg.format(fname, str(e)))
 
     # The bathymetry information does not exist. Throw error.
     else:
@@ -72,7 +95,8 @@ def load_bathymetry_file(fname):
         raise IOError(fname)
 
 
-def meta_from_bins(x_bins, y_bins, meta=None, resolution=None, verbose=False):
+def meta_from_bins(x_bins, y_bins, zone, meta=None, resolution=None,
+                   lat_bins=None, lon_bins=None, verbose=False):
     """Create bathymetry meta-data from X and Y bins.
 
     Creates bathymetry meta-data X and Y bin information. The bathymetry is
@@ -80,6 +104,7 @@ def meta_from_bins(x_bins, y_bins, meta=None, resolution=None, verbose=False):
 
         meta = {'x_bins': array(N,),
                 'y_bins': array(M,),
+                'zone': str(),
                 'x_lim': [min(bathy['x_bins']), min(bathy['x_bins'])],
                 'y_lim': [min(bathy['y_bins']), min(bathy['y_bins'])],
                 'extent': [bathy['x_bins'][0] - bathy['resolution']/2,
@@ -92,22 +117,40 @@ def meta_from_bins(x_bins, y_bins, meta=None, resolution=None, verbose=False):
                 'size': M * N,
                 'resolution': float()}
 
+    if WGS84 information is provided, the following optional fields will also
+    be returned:
+
+        meta = {'lon_bins': array(N,),
+                'lat_bins': array(M,),
+                'lat_lim': [min(bathy['lat_bins']), min(bathy['lat_bins'])],
+                'lon_lim': [min(bathy['lon_bins']), min(bathy['lon_bins'])]}
+
     Args:
-        x_bins (np.array): array of X co-ordinate for each column in bathymetry
+        x_bins (np.array): array of X co-ordinates for each column in
+            bathymetry raster.
+        y_bins (np.array): array of Y co-ordinates for each row in bathymetry
             raster.
-        y_bins (np.array): array of Y co-ordinate for each row in bathymetry
-            raster.
+        zone (string): the UTM zone associated with the northings (y_bins) and
+            eastings (x_bins).
         meta (dict, optional): if specified the bathymetry meta-data will be
             added to the provided dictionary.
         resolution (float, optional): if set to `None` the resolution will be
-            calculated from the bins. If provided, the value will be stored in the
-            meta-data.
+            calculated from the bins. If provided, the value will be stored and
+            returned in the meta-data.
+        lat_bins (np.array, optional): array of latitudes for each row in
+            bathymetry raster (must be specified with lon_bins).
+        lon_bins (np.array, optional): array of longitudes for each column in
+            bathymetry raster (must be specified with lat_bins).
         verbose (bool, optional): If set to True the contents of the bathymetry
             meta-data dictionary will be summarised on stdout.
 
     Returns:
         dict: Dictionary object containing the bathymetry meta-data. See
               function description for format details.
+
+    Raises:
+        Exception: If lat_bins or lon_bins are provided and do not have the
+            same number of elements as y_bins and x_bins.
 
     """
 
@@ -118,13 +161,30 @@ def meta_from_bins(x_bins, y_bins, meta=None, resolution=None, verbose=False):
     # Use raster container to store size information.
     meta['x_bins'] = x_bins
     meta['y_bins'] = y_bins
+    meta['zone'] = zone
 
     # Set the resolution. If the resolution is not provide, calculate the
     # resolution from the difference in bin elements.
     if resolution is None:
-        meta['resolution'] = np.abs(meta['x_bins'][1] - meta['x_bins'][0])
+        meta['resolution'] = float(np.abs(meta['x_bins'][1] - meta['x_bins'][0]))
     else:
-        meta['resolution'] = resolution
+        meta['resolution'] = float(resolution)
+
+    # Store latitude and longitude bins if provided.
+    if lat_bins is not None and lon_bins is not None:
+        meta['lat_bins'] = lat_bins
+        if lat_bins.size != y_bins.size:
+            msg = 'Latitude and Y-bins must have the same number of elements.'
+            raise Exception(msg)
+
+        meta['lon_bins'] = lon_bins
+        if lon_bins.size != x_bins.size:
+            msg = 'Longitude and X-bins must have the same number of elements.'
+            raise Exception(msg)
+
+        # Store lat/lon convenience fields.
+        meta['lat_lim'] = [meta['lat_bins'].min(), meta['lat_bins'].max()]
+        meta['lon_lim'] = [meta['lon_bins'].min(), meta['lon_bins'].max()]
 
     # Store 'convenience' fields.
     meta['x_lim'] = [meta['x_bins'].min(), meta['x_bins'].max()]
@@ -136,24 +196,49 @@ def meta_from_bins(x_bins, y_bins, meta=None, resolution=None, verbose=False):
 
     # Consider X-bin and Y-bin values to mark the centre of bathymetry pixels.
     radius = meta['resolution'] / 2.0
-    meta['extent'] = [meta['x_lim'][0] - radius, meta['x_lim'][1] + radius,
-                      meta['y_lim'][0] - radius, meta['y_lim'][1] + radius]
+    meta['extent'] = [float(meta['x_lim'][0]) - radius,
+                      float(meta['x_lim'][1]) + radius,
+                      float(meta['y_lim'][0]) - radius,
+                      float(meta['y_lim'][1]) + radius]
 
     # Summarise bathymetry data.
     if verbose:
-        print 'Bathymetry Summary:'
-        print '    X-bins:      [{0},]'.format(meta['cols'])
-        print '    Y-bins:      [{0},]'.format(meta['rows'])
-        print '    X-lim:       [{0[0]}, {0[1]}]'.format(meta['x_lim'])
-        print '    Y-lim:       [{0[0]}, {0[1]}]'.format(meta['y_lim'])
-        print '    extent:      [{0[0]}, {0[1]}, {0[2]}, {0[3]}]'.format(meta['extent'])
-        print '    rows:        {0}'.format(meta['rows'])
-        print '    cols:        {0}'.format(meta['cols'])
-        print '    shape:       [{0[0]}, {0[1]}]'.format(meta['shape'])
-        print '    size:        {0}'.format(meta['size'])
-        print '    resolution:  {0}'.format(meta['resolution'])
+        summarise_bathymetry(meta)
 
     return meta
+
+
+def summarise_bathymetry(bathy):
+    """Print a summary of the bathymetry information.
+
+    Args:
+        bathymetry (dict): Bathymetry meta-data (see :py:func:meta_from_bins).
+
+    """
+
+    # Determine whether to print latitude and longitude information.
+    wgs84 = False
+    if 'lat_bins' in bathy and 'lon_bins' in bathy:
+        wgs84 = True
+
+    print 'Bathymetry Summary:'
+    print '    X-bins:      [{0},]'.format(bathy['cols'])
+    print '    Y-bins:      [{0},]'.format(bathy['rows'])
+    print '    UTM-zone:    {0}'.format(bathy['zone'])
+    if wgs84:
+        print '    lon-bins:    [{0},]'.format(bathy['cols'])
+        print '    lat-bins:    [{0},]'.format(bathy['rows'])
+        print '    X-lim:       [{0[0]}, {0[1]}]'.format(bathy['x_lim'])
+        print '    Y-lim:       [{0[0]}, {0[1]}]'.format(bathy['y_lim'])
+    if wgs84:
+        print '    lon-lim:     [{0[0]}, {0[1]}]'.format(bathy['lon_lim'])
+        print '    lat-lim:     [{0[0]}, {0[1]}]'.format(bathy['lat_lim'])
+    print '    extent:      [{0[0]}, {0[1]}, {0[2]}, {0[3]}]'.format(bathy['extent'])
+    print '    rows:        {0}'.format(bathy['rows'])
+    print '    cols:        {0}'.format(bathy['cols'])
+    print '    shape:       [{0[0]}, {0[1]}]'.format(bathy['shape'])
+    print '    size:        {0}'.format(bathy['size'])
+    print '    resolution:  {0}'.format(bathy['resolution'])
 
 
 def load_bathymetry_meta(bathymetry_path, verbose=True):
@@ -165,6 +250,7 @@ def load_bathymetry_meta(bathymetry_path, verbose=True):
 
         bathymetry_path/
             |----resolution.pkl.bz2
+            |----utm_zone.txt
             |----x_bins.pkl.bz2
             |----y_bins.pkl.bz2
 
@@ -172,6 +258,9 @@ def load_bathymetry_meta(bathymetry_path, verbose=True):
 
         - resolution: Contains a single float specifying the (square) size of
                       each bathymetry pixel in metres.
+
+        - utm_zone: Contains a string specifying which UTM zone the eastings
+                    (x_bins) and northings (y_bins) are specified in.
 
         - x_bins: Contains a numpy vector storing the local easting, in metres,
                   for each column of bathymetry pixels
@@ -192,8 +281,9 @@ def load_bathymetry_meta(bathymetry_path, verbose=True):
               format of this output see :py:func:meta_from_bins).
 
     Raises:
-        Exception: If a file could not be opened for an unexpected reason.
-        IOError: If the path or a required bathymetry file does not exist.
+        Exception: If mandatory all files could not be located.
+        IOError: If the path does not exist or a file could not be opened for
+            an unexpected reason.
 
     """
 
@@ -201,18 +291,49 @@ def load_bathymetry_meta(bathymetry_path, verbose=True):
     if not os.path.exists(bathymetry_path):
         raise IOError('Could not locate the path: {0}'.format(bathymetry_path))
 
+    # Create function for constructing file names from the path.
+    mkfname = lambda feat: os.path.join(bathymetry_path, feat + '.pkl.bz2')
+
+    # Ensure mandatory fields exist.
+    required = [mkfname(info) for info in ['resolution', 'x_bins', 'y_bins']]
+    required.append(os.path.join(bathymetry_path, 'utm_zone.txt'))
+    if not check_all_files_exist(required):
+        msg = "The files 'zone.txt', 'resolution.pkl.bz2', 'x_bins.pkl.bz2' "
+        msg += "and 'y_bins.pkl.bz2' must exist in the path {0}."
+        raise Exception(msg.format(bathymetry_path))
+
     # Iterate through bathymetry information and load into dictionary.
     bathy = dict()
     for info in ['resolution', 'x_bins', 'y_bins']:
-        fname = os.path.join(bathymetry_path, info + '.pkl.bz2')
         try:
-            bathy[info] = load_bathymetry_file(fname)
+            bathy[info] = load_bathymetry_file(mkfname(info))
         except:
             raise
 
-    # Create meta-data from x/y bins and resolution.
-    bathy = meta_from_bins(bathy['x_bins'], bathy['y_bins'],
-                           resolution=bathy['resolution'], verbose=verbose)
+    # Load UTM zone information.
+    with open(required[-1], 'r') as f:
+        bathy['zone'] = f.read().strip()
+
+    # Load WGS84 cell co-ordinates if they exist.
+    WGS84 = [mkfname(info) for info in ['lon_bins', 'lat_bins']]
+    if check_all_files_exist(WGS84):
+        for fname in WGS84:
+            try:
+                bathy[info] = load_bathymetry_file(fname)
+            except:
+                raise
+
+    # Create meta-data with WGS84 information.
+    if all(i in bathy for i in ['lon_bins', 'lat_bins']):
+        bathy = meta_from_bins(bathy['x_bins'], bathy['y_bins'], bathy['zone'],
+                               resolution=bathy['resolution'],
+                               lat_bins=bathy['lat_bins'],
+                               lon_bins=bathy['lon_bins'], verbose=verbose)
+
+    # Create meta-data without WGS84 information.
+    else:
+        bathy = meta_from_bins(bathy['x_bins'], bathy['y_bins'], bathy['zone'],
+                               resolution=bathy['resolution'], verbose=verbose)
 
     return bathy
 
@@ -228,8 +349,11 @@ def load_bathymetry(bathymetry_path, invalid=np.nan, verbose=True):
             |----depth.pkl.bz2
             |----index.pkl.bz2
             |----resolution.pkl.bz2
+            |----utm_zone.txt
             |----x_bins.pkl.bz2
             |----y_bins.pkl.bz2
+            |----<optional> lat_bins.pkl.bz2
+            |----<optional> lon_bins.pkl.bz2
 
     where the .pkl.bz2 files:
 
@@ -247,11 +371,20 @@ def load_bathymetry(bathymetry_path, invalid=np.nan, verbose=True):
         - resolution: Contains a single float specifying the (square) size of
                       each bathymetry pixel in metres.
 
+        - utm_zone: Contains a string specifying which UTM zone the eastings
+                    (x_bins) and northings (y_bins) are specified in.
+
         - x_bins: Contains a numpy vector storing the local easting, in metres,
                   for each column of bathymetry pixels
 
         - y_bins: Contains a numpy vector storing the local northing, in
                   metres, for each row of bathymetry pixels
+
+        - lat_bins: Contains a numpy vector storing the WGS84 latitude for each
+                  row of bathymetry pixels
+
+        - lon_bins: Contains a numpy vector storing the WGS84 longitude for
+                  each column of bathymetry pixels
 
     The bathymetry is returned as a dictionary containing the same key-value
     pairs as the output of :py:func:meta_from_bins. An additional key 'depth'
@@ -299,17 +432,7 @@ def load_bathymetry(bathymetry_path, invalid=np.nan, verbose=True):
 
     # Summarise bathymetry data.
     if verbose:
-        print 'Bathymetry Summary:'
-        print '    depth:       [{0[0]}x{0[1]}]'.format(bathy['depth'].shape)
-        print '    X-bins:      [{0[0]},]'.format(bathy['x_bins'].shape)
-        print '    Y-bins:      [{0[0]},]'.format(bathy['y_bins'].shape)
-        print '    X-lim:       [{0[0]}, {0[1]}]'.format(bathy['x_lim'])
-        print '    Y-lim:       [{0[0]}, {0[1]}]'.format(bathy['y_lim'])
-        print '    extent:      [{0[0]}, {0[1]}, {0[2]}, {0[3]}]'.format(bathy['extent'])
-        print '    rows:        {0}'.format(bathy['rows'])
-        print '    cols:        {0}'.format(bathy['cols'])
-        print '    size:        {0}'.format(bathy['size'])
-        print '    resolution:  {0}'.format(bathy['resolution'])
+        summarise_bathymetry(bathy)
 
     return bathy
 
@@ -343,8 +466,11 @@ def load_features(features, bathymetry_path, transform=False, verbose=True):
         bathymetry_path/
             |    |----depth.pkl.bz2
             |    |----index.pkl.bz2
+            |    |----utm_zone.txt
             |    |----x_bins.pkl.bz2
             |    |----y_bins.pkl.bz2
+            |    |----<optional> lat_bins.pkl.bz2
+            |    |----<optional> lon_bins.pkl.bz2
             |
             +----<scale>
                  |----aspect.pkl.bz2
@@ -370,18 +496,14 @@ def load_features(features, bathymetry_path, transform=False, verbose=True):
                  bathymetry pixels. Note that the shape of the raster is given
                  by the size of 'x_bins' (cols) and 'y_bins' (rows).
 
-        - x_bins: Contains a numpy vector storing the local easting, in metres,
-                  for each column of bathymetry pixels
-
-        - y_bins: Contains a numpy vector storing the local northing, in
-                  metres, for each row of bathymetry pixels
+    for a description of the other files in this directory structure see
+    :py:func:load_bathymetry.
 
     Note::
 
-        There is no gaurantee that all features will be available at any
+        There is no guarantee that all features will be available at any
         particular location. As a result, rows in the output which do not have
         a full compliment of features (entire row of valid data) are discarded.
-
 
     Args:
         features (str): String specifying which features are loaded (see
@@ -562,8 +684,7 @@ def cartesian_to_bathymetry(bathymetry, easting, northing):
     """Convert Cartesian co-ordinates to bathymetry row, column subscripts.
 
     Args:
-        bathymetry (dict): Bathymetry meta-data (see
-            :py:func:load_bathymetry_meta).
+        bathymetry (dict): Bathymetry meta-data (see :py:func:meta_from_bins).
         easting (np.array): Eastings in cartesian co-ordinates. These values
             must lie within the easting limits of the raster.
         northing (np.array): Northings in cartesian co-ordinates. These values
@@ -622,8 +743,7 @@ def label_bathymetry_pixels(easting, northing, classes, bathymetry, valid):
         northing (np.array): Northings in Cartesian co-ordinates. These values
             must lie within the northing limits of the raster.
         classes (np.array): Classes observed at Cartesian co-ordinates.
-        bathymetry (dict): Bathymetry meta-data (see
-            :py:func:load_bathymetry_meta).
+        bathymetry (dict): Bathymetry meta-data (see :py:func:meta_from_bins).
         valid (np.array): array of indices in the bathymetry raster which the
             AUV observations are able to observe. If a bathymetry pixel is not
             referenced in this array, it will not appear in the labelled
@@ -679,8 +799,7 @@ def subsample_sparse_raster(subsample, index, bathymetry, verbose=True):
         subsample (int): integer scale to sub-sample (every N-th point).
         index (np.array): array of indices indicating which elements of the
             bathymetry raster contain valid values.
-        bathymetry (dict): Bathymetry meta-data (see
-            :py:func:load_bathymetry_meta).
+        bathymetry (dict): Bathymetry meta-data (see :py:func:meta_from_bins).
         verbose (bool, optional): If set to True the contents of the bathymetry
             meta-data dictionary will be summarised on stdout.
 
@@ -701,6 +820,7 @@ def subsample_sparse_raster(subsample, index, bathymetry, verbose=True):
     # Generate meta-data for sub-sampled raster.
     sub_raster = meta_from_bins(bathymetry['x_bins'][sub_cols],
                                 bathymetry['y_bins'][sub_rows],
+                                bathymetry['zone'],
                                 verbose=verbose)
 
     # Create mask of invalid locations in the raster given the index.

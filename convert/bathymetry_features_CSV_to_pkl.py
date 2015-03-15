@@ -13,13 +13,13 @@ from numpy import genfromtxt
 if __name__ == '__main__':
 
     # Location of input CSVs.
-    INPUT_PREFIX = '/media/Data/Code/survey_planning/data/bathymetry'
+    INPUT_PREFIX = '/media/Data/Code/survey_planning/data/bathymetry/scott_reef'
 
     # Location of output pickles.
-    OUTPUT_PREFIX = '/media/Data/Code/survey_planning/data/bathymetry/'
+    OUTPUT_PREFIX = '/media/Data/Code/survey_planning/data/bathymetry/scott_reef/'
 
     # Scales to convert.
-    SCALES = [2, 8, 16]
+    SCALES = [1, 2, 4, 8, 16]
 
     # Create bathymetry information.
     t0 = time.time()
@@ -36,14 +36,33 @@ if __name__ == '__main__':
         if info == 'index':
             data = data.astype(int)
 
-        elif info == 'x_bins':
-            data = data.T
-
         # Write file to output path.
         output_file = OUTPUT_PREFIX + '{0}.pkl.bz2'.format(info)
         print '    {0}'.format(output_file)
         with BZ2File(output_file, 'w') as f:
-            pickle.dump(data, f, protocol=2)
+            pickle.dump(data.flatten(), f, protocol=2)
+
+    for info in ['zone', 'lon_bins', 'lat_bins']:
+
+        info_path = INPUT_PREFIX + '_{0}.csv'.format(info)
+        if os.path.exists(info_path):
+
+            # Write file to output path.
+            if info == 'zone':
+                with open(info_path, 'r') as f:
+                    data = f.read()
+                output_file = OUTPUT_PREFIX + '{0}.txt'.format(info)
+                print '    {0}'.format(output_file)
+                with open(output_file, 'w') as f:
+                    f.write(data.replace(',', ''))
+
+            # Load CSV data as numpy arrays.
+            else:
+                data = genfromtxt(info_path, delimiter=',')
+                output_file = OUTPUT_PREFIX + '{0}.pkl.bz2'.format(info)
+                print '    {0}'.format(output_file)
+                with BZ2File(output_file, 'w') as f:
+                    pickle.dump(data.flatten(), f, protocol=2)
 
     print '    Elapsed time: {0:1.3f}s\n'.format(time.time() - t0)
 
@@ -78,7 +97,7 @@ if __name__ == '__main__':
             output_file = output_path + '{0}.pkl.bz2'.format(field)
             print '    {0}'.format(output_file)
             with BZ2File(output_file, 'w') as f:
-                pickle.dump(data, f, protocol=2)
+                pickle.dump(data.flatten(), f, protocol=2)
 
         print '    Elapsed time: {0:1.3f}s\n'.format(time.time() - t0)
 
