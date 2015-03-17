@@ -348,6 +348,131 @@ class Plsc(Gpr):
 
         return p, mu, sigma
 
+# --------------------------------------------------------------------------- #
+#                                   EP-GPC
+# --------------------------------------------------------------------------- #
+
+
+class EpGpc(object):
+    """Create an all-vs-one Gaussian process classifier."""
+
+    def __init__(self, X, Y, kernel=None, Z=None):
+        """Initialise the classification model."""
+
+        # Create default kernel.
+        if kernel is None:
+            kernel = GPy.kern.RBF(X.shape[1])
+
+        # Use full model by default.
+        sparse = False
+
+        # Use sparse model.
+        if Z is not None:
+
+            # Create set of inducing points by linearly interpolating the
+            # dataset.
+            if isinstance(Z, (int, long)):
+                num_inducing = Z
+
+                if num_inducing < len(X):
+                    idx = np.linspace(0, len(X)-1, num_inducing).astype(int)
+                    Z = X[np.unique(idx), :]
+                    sparse = True
+
+            # Use input array of inducing points.
+            else:
+                if Z.shape[1] != X.shape[1]:
+                    msg = 'The inducing points Z must have the same '
+                    msg += 'number of columns as the inputs X.'
+                    raise Exception(msg)
+
+                elif Z.shape[0] >= X.shape[0]:
+                    msg = 'There must be less inducing points Z than inputs X.'
+                    raise Exception(msg)
+
+                else:
+                    sparse = True
+
+        # Use full model.
+        if not sparse:
+            self.__gpc = GPy.core.GP(X=X,
+                                     Y=Y,
+                                     kernel=copy.deepcopy(kernel),
+                                     inference_method=EP(),
+                                     likelihood=GPy.likelihoods.Bernoulli())
+
+        # Use sparse model.
+        else:
+            self.__gpc = GPy.core.SparseGP(X, Y, Z,
+                                           kernel=copy.deepcopy(kernel),
+                                           likelihood=GPy.likelihoods.Bernoulli(),
+                                           inference_method=EPDTC())
+
+            # Attempt to optimise the location of the inducing inputs.
+            self.__gpc.Z.unconstrain()
+
+    @property
+    def X(self):
+        """Training inputs."""
+        return self.__gpc.X
+
+    @X.setter
+    def X(self, value):
+        self.__gpc.X = value
+
+    @property
+    def Y(self):
+        """Training outputs."""
+        return self.__gpc.Y
+
+    @Y.setter
+    def Y(self, value):
+        self.__gpc.Y = value
+
+    @property
+    def kernel(self):
+        """Training outputs."""
+        return self.__gpc.kern
+
+    @kernel.setter
+    def kernel(self, value):
+        self.__gpc.kernel = value
+
+    def optimise(self, iterations=10, max_iterations=100, verbose=True):
+        """Optimise hyper-parameters of Gaussian process."""
+
+        # Retrieve process ID.
+        pid = os.getpid()
+
+        # Perform several optimisation trials.
+        for i in range(iterations):
+
+            # Run approximation method (EP by default) and then optimise the
+            # kernel parameters.
+            self.__gpc.optimize('bfgs', max_iters=max_iterations)
+
+            if verbose:
+                msg = 'PID {0:n}: {1}, iteration {2:>3n} of {3:>3n}, f = {4:>10.4f}'
+                print msg.format(pid, self.__gpc.name, i + 1, iterations,
+                                 self.__gpc.log_likelihood())
+
+        return self
+
+    def log_likelihood(self):
+        """Return the log-likelihood of the model."""
+
+        return self.__gpc.log_likelihood()
+
+    def predict(self, xs, verbose=True):
+        """Perform inference in Gaussian process."""
+
+        # Perform inference in the latent function space and then squash
+        # the output through the likelihood function.
+        f, v = self.__gpc._raw_predict(xs)
+        p = self.__gpc.likelihood.predictive_values(f, v)[0]
+
+        return p.flatten(), f.flatten(), v.flatten()
+
 
 # --------------------------------------------------------------------------- #
 #                          All-vs-one classification
@@ -392,7 +517,9 @@ class AllVsOne(object):
         for k in self.__labels:
             print 'Creating model for class {0}'.format(k)
             C = (Y == k).astype(float)
-            self.__models.append(model(X, C, *args, **kwargs))
+            gpc = model(X, C, *args, **kwargs)
+            gpc.name = 'Class {0}'.format(k)
+            self.__models.append(gpc)
 
     def optimise(self, *args, **kwargs):
         """Optimise hyper-parameters of Gaussian process."""
@@ -494,225 +621,9 @@ class AllVsOne(object):
         return p, f, v
 
 # --------------------------------------------------------------------------- #
-#                                      GPC
-# --------------------------------------------------------------------------- #
-
-def _gpc_optimise(model, iterations, max_iterations, verbose=False):
-
-    # Retrieve process ID.
-    pid = os.getpid()
-
-    # Perform several optimisation trials.
-    for i in range(iterations):
-
-        # Run approximation method (EP by default) and then optimise the kernel
-        # parameters.
-        model.optimize('bfgs', max_iters=max_iterations)
-
-        if verbose:
-            msg = 'PID {0:n}: {1}, iteration {2:>3n} of {3:>3n}, f = {4:>10.4f}'
-            print msg.format(pid, model.name, i + 1, iterations,
-                             model.log_likelihood())
-
-    return model
-
-
-def _gpc_predict(models, xs, verbose=False):
-    """Function for training Gaussian process classifier."""
-
-    # Retrieve process ID.
-    pid = os.getpid()
-
-    # Pre-allocate memory.
-    K = len(models)
-    p = np.zeros((xs.shape[0], K))
-    f = np.zeros((xs.shape[0], K))
-    v = np.zeros((xs.shape[0], K))
-
-    # Iterate through models.
-    for i, model in enumerate(models):
-        if verbose:
-            msg = 'PID {0:n}: {1}, Performing inference ({2} observations)'
-            print msg.format(pid, model.name, xs.shape[0])
-
-        # Perform inference in the latent function space and then squash
-        # the output through the likelihood function.
-        f_i, v_i = model._raw_predict(xs)
-        p_i = model.likelihood.predictive_values(f_i, v_i)[0]
-
-        # The output of GPy inference are [Nx1] arrays. Numpy's
-        # broadcasting cannot be used in this circumstance. Flatten the
-        # arrays to allow column assignment.
-        f[:, i] = f_i.flatten()
-        v[:, i] = v_i.flatten()
-        p[:, i] = p_i.flatten()
-
-    # Replace rows of zeros (unlikely) with uncertainty.
-    p[np.all(p == 0, axis=1), :] = 1.0 / float(K)
-
-    # Normalise one-vs-all probabilities.
-    p = (p.T / np.sum(p, axis=1)).T
-
-    return p, f, v
-
-
-class GPClassification(object):
-    """Create an all-vs-one Gaussian process classifier."""
-
-    def __init__(self, X, Y, kernel=None, threads=None, sparse=False,
-                 inducing=10, verbose=True):
-        """Initialise the classification model."""
-
-        # Store level of output.
-        self.__verbose = verbose
-        self.__threads = threads
-
-        # Ensure the inputs and outputs are paired.
-        if X.shape[0] != Y.shape[0]:
-            raise Exception('The input and outputs must be the same length.')
-
-        # Find unique set of labels in the data set.
-        self.__labels = np.unique(Y.flatten())
-
-        # Currently we cannot parallelise the sparse model.
-        if sparse and (threads is not None):
-            raise Exception('The sparse model cannot be parallelised.')
-
-        # If the model is SPARSE create inducing points.
-        if sparse:
-
-            # There are less inducing points than data points, use full model.
-            num_inducing = inducing * X.shape[1]
-            if X.shape[0] < num_inducing:
-                sparse = False
-
-            # Create set of inducing points by linearly interpolating the
-            # dataset.
-            else:
-                idx = np.linspace(0, len(X)-1, num_inducing).astype(int)
-                Z = X[np.unique(idx), :].copy()
-
-        # By default, use a squared exponential kernel for the classification
-        # model.
-        if kernel is None:
-            kernel = GPy.kern.RBF(X.shape[1])
-
-        # Create a Gaussian process classifier for each label in the dataset.
-        self.__models = list()
-        for i, label in enumerate(self.__labels):
-            if self.__verbose:
-                print 'Creating model for class {0}'.format(i + 1)
-
-            # Perform all-vs-one classification for the current class.
-            c = (Y == label).astype(int)
-
-            # Create Gaussian process classifier for current class.
-            if not sparse:
-                gpc = GPy.core.GP(X=X,
-                                  Y=c,
-                                  kernel=copy.deepcopy(kernel),
-                                  inference_method=EP(),
-                                  likelihood=GPy.likelihoods.Bernoulli())
-
-            # Create SPARSE Gaussian process classifier for current class.
-            else:
-                gpc = GPy.core.SparseGP(X, c, Z,
-                                        kernel=copy.deepcopy(kernel),
-                                        likelihood=GPy.likelihoods.Bernoulli(),
-                                        inference_method=EPDTC())
-
-                # Attempt to optimise the location of the inducing inputs.
-                gpc.Z.unconstrain()
-
-            # Name model.
-            gpc.name = 'Class {0}'.format(str(self.__labels[i]))
-
-            # Store model.
-            self.__models.append(gpc)
-
-    def optimise(self, iterations=10, max_iterations=100, verbose=True):
-        """Optimise the kernel parameters."""
-
-        # Iterate through models.
-        t0 = time.time()
-
-        # Perform optimisation on a SINGLE process.
-        if not self.__threads:
-            for i, model in enumerate(self.__models):
-                self.__models[i] = _gpc_optimise(model,
-                                                 iterations,
-                                                 max_iterations,
-                                                 self.__verbose)
-
-        # Perform optimisation on MULTIPLE processes.
-        else:
-
-            # Create list of jobs to execute in parallel.
-            jobs = list()
-            for i, model in enumerate(self.__models):
-                jobs.append({'target': _gpc_optimise,
-                             'args': [model,
-                                      iterations,
-                                      max_iterations,
-                                      self.__verbose]})
-
-            # Send jobs to queue.
-            output = parallelisation.pool(jobs, num_processes=self.__threads)
-
-            # Collect and store output.
-            for model in output:
-                self.__models[i] = model
-
-        if verbose:
-            print 'Elapsed time {0:.3f}s'.format(time.time() - t0)
-
-    def predict(self, xs, chunks=None, verbose=True):
-
-        # Pre-allocate memory.
-        t0 = time.time()
-        K = len(self.__labels)
-        p = np.zeros((xs.shape[0], K))
-        f = np.zeros((xs.shape[0], K))
-        v = np.zeros((xs.shape[0], K))
-
-        # Perform inference on a SINGLE process.
-        if not self.__threads:
-            for i, idx in block_index(len(xs), chunks):
-                if verbose:
-                    msg = 'Completed {0:>5.1f}%'
-                    print msg.format(float(i + 1) / chunks * 100)
-
-                # Perform inference on chunk.
-                p[idx, :], f[idx, :], v[idx, :] = _gpc_predict(self.__models,
-                                                               xs[idx, :])
-
-        # Perform inference on MULTIPLE processes.
-        else:
-
-            # Create list of jobs to execute in parallel.
-            jobs = list()
-            for i, idx in block_index(len(xs), chunks):
-                jobs.append({'target': _gpc_predict,
-                             'args': [self.__models,
-                                      xs[idx, :],
-                                      self.__verbose]})
-
-            # Send jobs to queue.
-            output = parallelisation.pool(jobs, num_processes=self.__threads)
-
-            # Reconstruct output.
-            for i, idx in block_index(len(xs), chunks):
-                p[idx, :], f[idx, :], v[idx, :] = output[i]
-
-        if verbose:
-            print '\nElapsed time {0:.3f}s'.format(time.time() - t0)
-
-        return p, f, v
-
-
-# --------------------------------------------------------------------------- #
 #                             Plotting Functions
 # --------------------------------------------------------------------------- #
+
 
 def plot_probability(p, idx, shape, K, blending='flat', cmap=cm.hsv):
     """Plot most likely class or class probabilities."""
