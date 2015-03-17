@@ -192,7 +192,7 @@ def pool(jobs, num_processes=None, verbose=True):
     if verbose:
         print 'Staring pool:'
         print '    {0} jobs queued in pool.'.format(number_of_jobs)
-        print '    {0} processes available to pool.'.format(num_processes)
+        print '    {0} processes available to pool.\n'.format(num_processes)
 
     # Wait for all processes to join.
     while True:
@@ -298,7 +298,7 @@ def pool(jobs, num_processes=None, verbose=True):
         time.sleep(0.25)
 
     if verbose:
-        msg = 'Jobs completed. Pool closed.'
+        msg = '\nJobs completed. Pool closed.'
         print msg
 
     # Return the ordered output.
