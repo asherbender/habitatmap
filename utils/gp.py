@@ -4,9 +4,10 @@ import copy
 import time
 import bathymetry
 import parallelisation
-import multiprocessing as mp
+
 
 # Load linear algebra/science libraries.
+import scipy
 import numpy as np
 from sklearn.grid_search import ParameterGrid
 
@@ -17,6 +18,10 @@ import matplotlib.pyplot as plt
 import GPy
 from GPy.inference.latent_function_inference.expectation_propagation import EP
 from GPy.inference.latent_function_inference.expectation_propagation_dtc import EPDTC
+
+
+# Define small floating-point accuracy
+EPS = np.spacing(1)
 
 
 def chunk_index(length, number_chunks):
@@ -95,6 +100,176 @@ def gpr_chunk_inference(chunks, xs, model, verbose=True):
 
     return f_xs, V_xs
 
+
+# --------------------------------------------------------------------------- #
+#                                      GPR
+# --------------------------------------------------------------------------- #
+
+class Gpr(object):
+
+    def __init__(self, X, Y, kernel=None, Z=None):
+
+        # Create default kernel.
+        if kernel is None:
+            self.kernel = GPy.kern.RBF(X.shape[1])
+        else:
+            self.kernel = kernel
+
+        # Use full model by default.
+        sparse = False
+
+        # Use sparse model.
+        if Z is not None:
+
+            # Create set of inducing points by linearly interpolating the
+            # dataset.
+            if isinstance(Z, (int, long)):
+                num_inducing = Z
+
+                if num_inducing < len(X):
+                    idx = np.linspace(0, len(X)-1, num_inducing).astype(int)
+                    Z = X[np.unique(idx), :]
+                    sparse = True
+
+            # Use input array of inducing points.
+            else:
+                if Z.shape[1] != X.shape[1]:
+                    msg = 'The inducing points Z must have the same '
+                    msg += 'number of columns as the inputs X.'
+                    raise Exception(msg)
+
+                elif Z.shape[0] >= X.shape[0]:
+                    msg = 'There must be less inducing points Z than inputs X.'
+                    raise Exception(msg)
+
+                else:
+                    sparse = True
+
+        # Use full model.
+        if not sparse:
+            self.__gpr = GPy.models.GPRegression(X, Y, kernel=kernel)
+
+        # Use sparse model.
+        else:
+            self.__gpr = GPy.models.SparseGPRegression(X, Y, kernel=kernel,
+                                                       Z=Z)
+
+    @property
+    def X(self):
+        """Training inputs."""
+        return self.__gpr.X
+
+    @X.setter
+    def X(self, value):
+        self.__gpr.X = value
+
+    @property
+    def Y(self):
+        """Training outputs."""
+        return self.__gpr.Y
+
+    @Y.setter
+    def Y(self, value):
+        self.__gpr.Y = value
+
+    def optimise(self):
+        """Optimise hyper-parameters of Gaussian process."""
+
+        self.__gpr.optimize('bfgs')
+
+    def predict(self, xs):
+        """Perform inference in Gaussian process."""
+
+        # Perform inference.
+        m, v = self.__gpr.predict(xs)
+        return m.flatten(), v.flatten()
+
+
+# --------------------------------------------------------------------------- #
+#                                    PLSC
+# --------------------------------------------------------------------------- #
+
+def cumgauss_sigmoid(mu, sigma, alpha, beta):
+
+    # Note: The normal cumulative distribution function only differs
+    #       from the error function by scaling and translation. With:
+    #
+    #           Cumulative gaussian = norm.cdf(t) = 0.5 * erfc(-x/sqrt(2))
+    #
+    #       See:
+    #           http://en.wikipedia.org/wiki/Error_function#Related_functions
+
+    # Equation 6.42 (pg 148)
+    t = (alpha * mu + beta) / (np.sqrt(1 + (alpha**2) * sigma))
+    return 0.5 * scipy.special.erfc(-t / np.sqrt(2))
+
+
+class Plsc(Gpr):
+
+    def __init__(self, X, Y, kernel=None, Z=None, sigmoid=None, alpha=1.0,
+                 beta=1.0):
+
+        # Transform Y from [0, 1] to [-1, 1].
+        Y = 2 * Y - 1.
+
+        # Initialise Gaussian process regression model.
+        super(Plsc, self).__init__(X, Y, kernel=kernel, Z=Z)
+
+        # Create default sigmoid function.
+        if sigmoid is None:
+            self.__sigmoid = cumgauss_sigmoid
+
+        # Store sigmoid function hyper-parameters
+        self.__alpha = alpha
+        self.__beta = beta
+
+    def __optimise_sigmoid(self, params, y, mu, sigma):
+        """Minimise negative sum of log probabilities."""
+
+        # Wrapper function - swap input order for minimize.
+        alpha, beta = params
+        p = self.__sigmoid(mu, sigma, alpha, beta)
+
+        # Ensure probabilities represent their own class.
+        # (i.e. p(-1) = 1 - p(1))
+        p = np.abs(p - 0.5) + 0.5
+
+        # Maximise sum of log probabilities (minimise negative log
+        # probabilities). Equation 5.11 (pg 116).
+        return -np.sum(np.log(p + EPS))
+
+    def optimise(self):
+        """Optimise hyper-parameters of Gaussian process."""
+
+        # Optimise (kernel) parameters of Gaussian process regression.
+        super(Plsc, self).optimise()
+
+        # Calculate the LOO-CV predictive mean and variance (eq 5.12, pg 117).
+        Kinv = np.linalg.inv(self.kernel.K(self.X))
+        mu_i = self.Y - Kinv.dot(self.Y) / Kinv
+        sig_i = 1 / Kinv
+
+        # Optimise (kernel) parameters of Gaussian process regression.
+        res = scipy.optimize.minimize(self.__optimise_sigmoid,
+                                      (self.__alpha, self.__beta),
+                                      (self.Y, mu_i, sig_i))
+        self.__alpha, self.__beta = res.x
+
+    def predict(self, xs):
+        """Perform inference in Gaussian process."""
+
+        # Perform prediction in 'latent' space (prior to squashing).
+        mu, sigma = super(Plsc, self).predict(xs)
+
+        # Squash output through sigmoid to approximate probabilities.
+        p = self.__sigmoid(mu, sigma, self.__alpha, self.__beta)
+
+        return p, mu, sigma
+
+
+# --------------------------------------------------------------------------- #
+#                                      GPC
+# --------------------------------------------------------------------------- #
 
 def _gpc_optimise(model, iterations, max_iterations, verbose=False):
 
