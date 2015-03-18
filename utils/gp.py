@@ -19,6 +19,8 @@ import GPy
 from GPy.inference.latent_function_inference.expectation_propagation import EP
 from GPy.inference.latent_function_inference.expectation_propagation_dtc import EPDTC
 
+import pyGPs
+
 
 # Define small floating-point accuracy
 EPS = np.spacing(1)
@@ -602,8 +604,8 @@ class AllVsOne(object):
             jobs = list()
             for i, idx in block_index(len(xs), blocks):
                 jobs.append({'target': self.__predict,
-                             'args': [xs[idx, :],
-                                      1, False]})
+                             'args': [xs[idx, :],]})
+                                      # 1, False]})
 
             # Send jobs to queue.
             output = parallelisation.pool(jobs, num_processes=self.__threads)
@@ -691,3 +693,142 @@ def plot_variance(V, idx, shape, K, cols=1, titles=None, clabels=None,
         axs.append(ax)
 
     return axs
+
+
+
+
+
+
+
+
+
+
+
+
+
+# --------------------------------------------------------------------------- #
+#                                   EP-GPC
+# --------------------------------------------------------------------------- #
+
+class EPGPC(object):
+    """Create an all-vs-one Gaussian process classifier."""
+
+    def __init__(self, X, Y, kernel=None, mean=None):
+        """Initialise the classification model."""
+
+        # Set training data. Note that the targets are re-scaled from {0., 1.}
+        # to {-1., 1.} (to match pyGPs, internal representation).
+        self.X = X
+        self.Y = 2 * (Y - 0.5)
+
+        # Create default mean function.
+        if kernel is None:
+            mean = pyGPs.mean.Zero()
+
+        # Create default kernel.
+        if kernel is None:
+            kernel = pyGPs.cov.RBF(log_ell=0., log_sigma=1.)
+
+        # Create model.
+        self.__gpc = pyGPs.GPC()
+        self.__gpc.setPrior(mean=mean, kernel=kernel)
+        self.__gpc.setData(self.X, self.Y)
+        self.__gpc.setOptimizer('BFGS')
+
+    @property
+    def X(self):
+        """Training inputs."""
+        return self.__X
+
+    @X.setter
+    def X(self, value):
+        if not isinstance(value, (np.ndarray)) or value.ndim != 2:
+            raise Exception('The target inputs must be a 2D numpy array.')
+        else:
+            self.__X = value
+
+    @property
+    def Y(self):
+        """Training outputs."""
+        return self.__Y
+
+    @Y.setter
+    def Y(self, value):
+        if not isinstance(value, (np.ndarray)) or value.ndim != 2:
+            raise Exception('The target outputs must be a numpy array.')
+        else:
+            self.__Y = value
+
+    def optimise(self):
+        """Optimise hyper-parameters of Gaussian process."""
+
+        self.__gpc.optimize()
+        return self
+
+    def log_likelihood(self):
+        """Return the log-likelihood of the model."""
+
+        # Calculate the posterior. Note that it may be available from
+        # self.__gpc.nlZ
+        nlZ, post = self.__gpc.getPosterior(self, der=False)
+        return nlZ
+
+    def predict(self, xs, verbose=True):
+        """Perform inference in Gaussian process."""
+
+        N = xs.shape[0]
+        ymu, ys2, fmu, fs2, lp = self.__gpc.predict(xs, ys=np.ones((N, 1)))
+        return np.exp(lp).flatten(), fmu.flatten(), fs2.flatten()
+
+
+class EPGPC_FITC(EPGPC):
+
+    def __init__(self, X, Y, Z=None, kernel=None, mean=None):
+        """Initialise the classification model."""
+
+        # Set training data. Note that the targets are re-scaled from {0., 1.}
+        # to {-1., 1.} (to match pyGPs, internal representation).
+        self.X = X
+        self.Y = 2 * (Y - 0.5)
+
+        # Create default mean function.
+        if kernel is None:
+            mean = pyGPs.mean.Zero()
+
+        # Create default kernel.
+        if kernel is None:
+            kernel = pyGPs.cov.RBF(log_ell=0., log_sigma=1.)
+
+        # Create default inducing points.
+        if Z is None:
+            num_inducing = 10 * X.shape[1]
+            idx = np.linspace(0, len(X)-1, num_inducing).astype(int)
+            Z = X[np.unique(idx), :]
+
+        # Create model.
+        self.__gpc = pyGPs.GPC_FITC()
+        self.__gpc.setPrior(mean=mean, kernel=kernel, inducing_points=Z)
+        self.__gpc.setData(self.X, self.Y)
+        self.__gpc.setOptimizer('BFGS')
+
+
+    def optimise(self):
+        """Optimise hyper-parameters of Gaussian process."""
+
+        self.__gpc.optimize()
+        return self
+
+    def log_likelihood(self):
+        """Return the log-likelihood of the model."""
+
+        # Calculate the posterior. Note that it may be available from
+        # self.__gpc.nlZ
+        nlZ, post = self.__gpc.getPosterior(self, der=False)
+        return nlZ
+
+    def predict(self, xs, verbose=True):
+        """Perform inference in Gaussian process."""
+
+        N = xs.shape[0]
+        ymu, ys2, fmu, fs2, lp = self.__gpc.predict(xs, ys=np.ones((N, 1)))
+        return np.exp(lp).flatten(), fmu.flatten(), fs2.flatten()

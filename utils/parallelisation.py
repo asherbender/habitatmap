@@ -169,7 +169,7 @@ def pool(jobs, num_processes=None, verbose=True):
             raise Exception(msg.format(i))
 
         # Validate input arguments to target function.
-        if ('kwargs' in job) and not isinstance(job['kwargs'], (list, tuple)):
+        if ('kwargs' in job) and not isinstance(job['kwargs'], dict):
             msg = 'The optional arguments to job {0} must be '
             msg += 'specified as a list.'
             raise Exception(msg.format(i))
