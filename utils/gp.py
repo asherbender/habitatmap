@@ -23,7 +23,6 @@ def block_index(length, number_chunks):
 
     """
 
-
     j = -1
     n = int(np.ceil(float(length) / number_chunks))
     for i in xrange(0, length, n):
@@ -35,8 +34,224 @@ def block_index(length, number_chunks):
         yield j, idx
 
 
+def block_inference(function, xs, args=list(), kwargs=dict(), blocks=10,
+                    parallel=False, verbose=True):
+
+    # Ensure blocks is a positive number.
+    if blocks <= 0:
+        raise Exception('blocks must be a positive integer')
+    else:
+        blocks = int(blocks)
+
+    t0 = time.time()
+
+    # Perform inference on a SINGLE process.
+    if parallel is False:
+        job_output = list()
+        for i, idx in block_index(len(xs), blocks):
+            if verbose:
+                msg = 'Performing inference on block {0:>3} of {1:>3}.'
+                print msg.format(i + 1, blocks)
+            job_output.append(function(xs[idx, :], *args, **kwargs))
+
+    # Perform inference on MULTIPLE processes.
+    else:
+
+        # Create list of jobs to execute in parallel.
+        jobs = list()
+        for i, idx in block_index(len(xs), blocks):
+            jobs.append({'target': function,
+                         'args': [xs[idx, :], ] + args,
+                         'kwargs': kwargs})
+
+        # Send jobs to queue.
+        job_output = parallelisation.pool(jobs, num_processes=parallel)
+
+    # Copy jobs into single output.
+    output = list(job_output[0])
+    for i in range(1, blocks):
+        for j in range(len(output)):
+            output[j] = np.concatenate((output[j], job_output[i][j]))
+
+    if verbose:
+        print 'Elapsed time {0:.3f}s'.format(time.time() - t0)
+
+    return output
+
 # --------------------------------------------------------------------------- #
-#                                   EP-GPC
+#                          Gaussian Process Regression
+# --------------------------------------------------------------------------- #
+
+
+class GPR(object):
+    """Gaussian process regression.
+
+    Args:
+        X (np.array): (NxD) training inputs.
+        Y (np.array): (Nx1) training outputs.
+        mean (pyGPs.mean, optional): mean function to use during modelling. If
+            `None` is specified, a zero-mean function will be used.
+        kernel (pyGPs.cov, optional): covariance function to use during
+            modelling. If `None` is specified, a squared-exponential covariance
+            function will be used.
+
+    Attributes:
+        X (np.array): (NxD) training inputs.
+        Y (np.array): (Nx1) training output.
+
+    """
+
+    def __init__(self, X, Y, mean=None, kernel=None):
+
+        # Set training data.
+        self.X = X
+        self.Y = Y
+
+        # Create default mean function.
+        if kernel is None:
+            mean = pyGPs.mean.Zero()
+
+        # Create default kernel.
+        if kernel is None:
+            kernel = pyGPs.cov.RBF(log_ell=0., log_sigma=1.)
+
+        # Create model.
+        self._gpr = pyGPs.GPR()
+        self._gpr.setPrior(mean=mean, kernel=kernel)
+        self._gpr.setData(self.X, self.Y)
+
+    @property
+    def X(self):
+        """Training inputs."""
+        return self._X
+
+    @X.setter
+    def X(self, value):
+        if not isinstance(value, (np.ndarray)) or value.ndim != 2:
+            raise Exception('The target inputs must be a 2D numpy array.')
+        else:
+            self._X = value
+
+    @property
+    def Y(self):
+        """Training outputs."""
+        return self._Y
+
+    @Y.setter
+    def Y(self, value):
+        if not isinstance(value, (np.ndarray)) or value.ndim != 2:
+            raise Exception('The target outputs must be a numpy array.')
+        else:
+            self._Y = value
+
+    def optimise(self):
+        """Optimise hyper-parameters of Gaussian process classifier."""
+
+        self._gpr.optimize()
+        return self
+
+    def log_likelihood(self):
+        """Return the log-likelihood of the model.
+
+        Returns:
+            float: negative-log likelihood of the model.
+
+        """
+
+        # Calculate the posterior. Note that it may be available from
+        # self.__gpc.nlZ
+        nlZ, post = self._gpr.getPosterior(self, der=False)
+        return nlZ
+
+    def predict(self, xs, verbose=True):
+        """Perform inference in Gaussian process regression model.
+
+        Args:
+            xs (np.array): (MxD) input queries.
+
+        Returns:
+            tuple: The first element is a numpy array of predictive means. The
+                second element is a numpy array of predictive variances in the
+                latent function.
+
+        """
+
+        N = xs.shape[0]
+        ymu, ys2, fmu, fs2, lp = self._gpr.predict(xs, ys=np.ones((N, 1)))
+        return fmu.flatten(), fs2.flatten()
+
+
+class GPR_FITC(GPR):
+    """Sparse Gaussian process regression.
+
+    Args:
+        X (np.array): (NxD) training inputs.
+        Y (np.array): (Nx1) training outputs.
+        Z (np.array or int, optional): If set to `None` 10*D will be evenly
+           sampled from the rows of the training inputs `X` to use as inducing
+           inputs. If specified as an integer, a number of samples will be
+           evenly sampled from the rows of the training inputs `X` to use as
+           inducing inputs. If specified as an (QxD) numpy array, the locations
+           specified by the input will be used as inducing point.
+        mean (pyGPs.mean, optional): mean function to use during modelling. If
+            `None` is specified, a zero-mean function will be used.
+        kernel (pyGPs.cov, optional): covariance function to use during
+            modelling. If `None` is specified, a squared-exponential covariance
+            function will be used.
+
+    Attributes:
+        X (np.array): (NxD) training inputs.
+        Y (np.array): (Nx1) training output.
+
+    """
+
+    def __init__(self, X, Y, Z=None, kernel=None, mean=None):
+        """Initialise the classification model."""
+
+        # Set training data.
+        self.X = X
+        self.Y = Y
+
+        # If no inducing points are specified, sample ten points per dimensions
+        # for inducing points.
+        if Z is None:
+            Z = 10 * X.shape[1]
+
+        # Create set of inducing points by linearly interpolating the dataset.
+        if isinstance(Z, (int, long)):
+            num_inducing = Z
+
+            if num_inducing < len(X):
+                idx = np.linspace(0, len(X)-1, num_inducing).astype(int)
+                Z = X[np.unique(idx), :]
+
+        # Use input array of inducing points.
+        else:
+            if Z.shape[1] != X.shape[1]:
+                msg = 'The inducing points Z must have the same '
+                msg += 'number of columns as the inputs X.'
+                raise Exception(msg)
+
+            elif Z.shape[0] >= X.shape[0]:
+                msg = 'There must be less inducing points Z than inputs X.'
+                raise Exception(msg)
+
+        # Create default mean function.
+        if kernel is None:
+            mean = pyGPs.mean.Zero()
+
+        # Create default kernel.
+        if kernel is None:
+            kernel = pyGPs.cov.RBF(log_ell=0., log_sigma=1.)
+
+        # Create model.
+        self._gpr = pyGPs.GPR_FITC()
+        self._gpr.setPrior(mean=mean, kernel=kernel, inducing_points=Z)
+        self._gpr.setData(self.X, self.Y)
+
+
+# --------------------------------------------------------------------------- #
+#                        Gaussian Process Classification
 # --------------------------------------------------------------------------- #
 
 class EPGPC(object):
@@ -343,11 +558,11 @@ class OneVsAll(object):
 
         t0 = time.time()
 
-        # Perform optimisation on a SINGLE process.
+        # Perform inference on a SINGLE process.
         if not self.__threads:
             p, f, v = self.__predict(xs, blocks=blocks, verbose=self.__verbose)
 
-        # Perform optimisation on MULTIPLE processes.
+        # Perform inference on MULTIPLE processes.
         else:
 
             # Create list of jobs to execute in parallel.
