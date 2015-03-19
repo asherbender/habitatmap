@@ -9,7 +9,20 @@ import matplotlib.pyplot as plt
 
 
 def block_index(length, number_chunks):
-    """Yield index to array in chunks."""
+    """Yield index to array in block.
+
+    Args:
+        length (int): length of array.
+        number_chunks (int): number of blocks to break array into.
+
+    Yields:
+
+        tuple: The first element is an integer representing the current block
+            number. The second element is a list of indices marking the
+            location of the 'block' in the original array.
+
+    """
+
 
     j = -1
     n = int(np.ceil(float(length) / number_chunks))
@@ -22,37 +35,30 @@ def block_index(length, number_chunks):
         yield j, idx
 
 
-def gpr_chunk_inference(chunks, xs, model, verbose=True):
-    """Perform Gaussian process regression in chunks."""
-
-    # Pre-allocate memory for inferred mean and variance.
-    f_xs = np.zeros((len(xs), 1))
-    V_xs = np.zeros((len(xs), 1))
-
-    t0 = time.time()
-    if verbose:
-        print 'Performing inference:'
-
-    # Iterate through the data in chunks performing inference.
-    for i, idx in block_index(len(xs), chunks):
-        if verbose:
-            print '   completed {0:>5.1f}%'.format(float(i) / chunks * 100)
-        f_xs[idx, :], V_xs[idx, :] = model.predict(xs[idx, :])
-
-    if verbose:
-        print '\nElapsed time {0:.3f}s'.format(time.time() - t0)
-
-    return f_xs, V_xs
-
-
 # --------------------------------------------------------------------------- #
 #                                   EP-GPC
 # --------------------------------------------------------------------------- #
 
 class EPGPC(object):
-    """Create an all-vs-one Gaussian process classifier."""
+    """Expectation propagation, Gaussian process (binary) classification.
 
-    def __init__(self, X, Y, kernel=None, mean=None):
+    Args:
+        X (np.array): (NxD) training inputs.
+        Y (np.array): (Nx1) training output where the values take on binary
+            assignments (zero for class one and one for class two).
+        mean (pyGPs.mean, optional): mean function to use during modelling. If
+            `None` is specified, a zero-mean function will be used.
+        kernel (pyGPs.cov, optional): covariance function to use during
+            modelling. If `None` is specified, a squared-exponential covariance
+            function will be used.
+
+    Attributes:
+        X (np.array): (NxD) training inputs.
+        Y (np.array): (Nx1) training output.
+
+    """
+
+    def __init__(self, X, Y, mean=None, kernel=None):
         """Initialise the classification model."""
 
         # Set training data. Note that the targets are re-scaled from {0., 1.}
@@ -69,58 +75,96 @@ class EPGPC(object):
             kernel = pyGPs.cov.RBF(log_ell=0., log_sigma=1.)
 
         # Create model.
-        self.__gpc = pyGPs.GPC()
-        self.__gpc.setPrior(mean=mean, kernel=kernel)
-        self.__gpc.setData(self.X, self.Y)
-        self.__gpc.setOptimizer('BFGS')
+        self._gpc = pyGPs.GPC()
+        self._gpc.setPrior(mean=mean, kernel=kernel)
+        self._gpc.setData(self.X, self.Y)
+        self._gpc.setOptimizer('BFGS')
 
     @property
     def X(self):
         """Training inputs."""
-        return self.__X
+        return self._X
 
     @X.setter
     def X(self, value):
         if not isinstance(value, (np.ndarray)) or value.ndim != 2:
             raise Exception('The target inputs must be a 2D numpy array.')
         else:
-            self.__X = value
+            self._X = value
 
     @property
     def Y(self):
         """Training outputs."""
-        return self.__Y
+        return self._Y
 
     @Y.setter
     def Y(self, value):
         if not isinstance(value, (np.ndarray)) or value.ndim != 2:
             raise Exception('The target outputs must be a numpy array.')
         else:
-            self.__Y = value
+            self._Y = value
 
     def optimise(self):
-        """Optimise hyper-parameters of Gaussian process."""
+        """Optimise hyper-parameters of Gaussian process classifier."""
 
-        self.__gpc.optimize()
+        self._gpc.optimize()
         return self
 
     def log_likelihood(self):
-        """Return the log-likelihood of the model."""
+        """Return the log-likelihood of the model.
+
+        Returns:
+            float: negative-log likelihood of the model.
+
+        """
 
         # Calculate the posterior. Note that it may be available from
         # self.__gpc.nlZ
-        nlZ, post = self.__gpc.getPosterior(self, der=False)
+        nlZ, post = self._gpc.getPosterior(self, der=False)
         return nlZ
 
     def predict(self, xs, verbose=True):
-        """Perform inference in Gaussian process."""
+        """Perform inference in Gaussian process classifier.
+
+        Args:
+            xs (np.array): (MxD) input queries.
+
+        Returns: tuple: The first element is a numpy array of predictive
+            probabilities. The second element is a numpy array of predictive
+            means in the latent function. The final element is a numpy array of
+            predictive variances in the latent function.
+
+        """
 
         N = xs.shape[0]
-        ymu, ys2, fmu, fs2, lp = self.__gpc.predict(xs, ys=np.ones((N, 1)))
+        ymu, ys2, fmu, fs2, lp = self._gpc.predict(xs, ys=np.ones((N, 1)))
         return np.exp(lp).flatten(), fmu.flatten(), fs2.flatten()
 
 
 class EPGPC_FITC(EPGPC):
+    """Sparse expectation propagation, Gaussian process (binary) classification.
+
+    Args:
+        X (np.array): (NxD) training inputs.
+        Y (np.array): (Nx1) training output where the values take on binary
+            assignments (zero for class one and one for class two).
+        Z (np.array or int, optional): If set to `None` 10*D will be evenly
+           sampled from the rows of the training inputs `X` to use as inducing
+           inputs. If specified as an integer, a number of samples will be
+           evenly sampled from the rows of the training inputs `X` to use as
+           inducing inputs. If specified as an (QxD) numpy array, the locations
+           specified by the input will be used as inducing point.
+        mean (pyGPs.mean, optional): mean function to use during modelling. If
+            `None` is specified, a zero-mean function will be used.
+        kernel (pyGPs.cov, optional): covariance function to use during
+            modelling. If `None` is specified, a squared-exponential covariance
+            function will be used.
+
+    Attributes:
+        X (np.array): (NxD) training inputs.
+        Y (np.array): (Nx1) training output.
+
+    """
 
     def __init__(self, X, Y, Z=None, kernel=None, mean=None):
         """Initialise the classification model."""
@@ -163,49 +207,41 @@ class EPGPC_FITC(EPGPC):
             kernel = pyGPs.cov.RBF(log_ell=0., log_sigma=1.)
 
         # Create model.
-        self.__gpc = pyGPs.GPC_FITC()
-        self.__gpc.setPrior(mean=mean, kernel=kernel, inducing_points=Z)
-        self.__gpc.setData(self.X, self.Y)
-        self.__gpc.setOptimizer('BFGS')
+        self._gpc = pyGPs.GPC_FITC()
+        self._gpc.setPrior(mean=mean, kernel=kernel, inducing_points=Z)
+        self._gpc.setData(self.X, self.Y)
+        self._gpc.setOptimizer('BFGS')
 
-    def optimise(self):
-        """Optimise hyper-parameters of Gaussian process."""
-
-        self.__gpc.optimize()
-        return self
-
-    def log_likelihood(self):
-        """Return the log-likelihood of the model."""
-
-        # Calculate the posterior. Note that it may be available from
-        # self.__gpc.nlZ
-        nlZ, post = self.__gpc.getPosterior(self, der=False)
-        return nlZ
-
-    def predict(self, xs, verbose=True):
-        """Perform inference in Gaussian process."""
-
-        N = xs.shape[0]
-        ymu, ys2, fmu, fs2, lp = self.__gpc.predict(xs, ys=np.ones((N, 1)))
-        return np.exp(lp).flatten(), fmu.flatten(), fs2.flatten()
 
 # --------------------------------------------------------------------------- #
 #                          All-vs-one classification
 # --------------------------------------------------------------------------- #
 
-class AllVsOne(object):
+class OneVsAll(object):
     """Implementation of All-vs-One classification.
 
-    Args:
-      model (class):
-      X (np.array):
-      Y (np.array):
-      args (list, optional):
-      kwargs (dict, optional):
+    In one-vs-all (OVA) classification a binary classifier is trained to
+    classify one class against all others. This is done for each
+    class. Predictions are made by performing inference in each model and
+    combining and normalising the output of each classifier into a single
+    multinomial.
 
-    Attributes:
-      X (np.array):
-      Y (np.array):
+    Args:
+        model (class): Pointer to binary classifier to be used in multi-class
+            classification.
+        X (np.array): (NxD) training inputs.
+        Y (np.array): (Nx1) training output where the values take on discrete
+            1-of-K integer values. For example, in a five-class problem each
+            element in Y must take on one of the following values {1,2,3,4,5}.
+        args (list, optional): list of arguments used to initialise each binary
+            classification model.
+        kwargs (dict, optional): dictionary of optional keyword-value pairs
+            used to initialise each binary classification model.
+        threads (int, optional): number of processes to use during training and
+            inference. If set to `None`, all operations will be performed on a
+            single process.
+        verbose (bool, optional): If set to True the activity will be displayed
+            on stdout.
 
     """
 
@@ -230,7 +266,8 @@ class AllVsOne(object):
         # Initialise models.
         self.__models = list()
         for k in self.__labels:
-            print 'Creating model for class {0}'.format(k)
+            if self.__verbose:
+                print 'Creating model for class {0}'.format(k)
             C = (Y == k).astype(float)
             gpc = model(X, C, *args, **kwargs)
             gpc.name = 'Class {0}'.format(k)
@@ -317,8 +354,7 @@ class AllVsOne(object):
             jobs = list()
             for i, idx in block_index(len(xs), blocks):
                 jobs.append({'target': self.__predict,
-                             'args': [xs[idx, :],]})
-                                      # 1, False]})
+                             'args': [xs[idx, :]]})
 
             # Send jobs to queue.
             output = parallelisation.pool(jobs, num_processes=self.__threads)
