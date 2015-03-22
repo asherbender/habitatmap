@@ -13,7 +13,13 @@ displaying information about the bathymetry:
 
     - :py:func:load_bathymetry_file
     - :py:func:load_bathymetry_meta
+
+The raster data can be manipulated using the following functions:
+
     - :py:func:sparse_to_full
+    - :py:func:full_to_sparse
+    - :py:func:subsample_sparse
+    - :py:func:select_extent
 
 Raster data can be visualised using:
 
@@ -822,7 +828,7 @@ def label_bathymetry_pixels(easting, northing, classes, bathymetry, valid):
     return unique_index.flatten(), C.flatten()
 
 
-def subsample_sparse_raster(subsample, index, bathymetry, verbose=True):
+def subsample_sparse(subsample, index, bathymetry, verbose=True):
     """Sub-sample a sparse matrix.
 
     Return the index to elements in sparse bathymetry which create a
@@ -865,6 +871,89 @@ def subsample_sparse_raster(subsample, index, bathymetry, verbose=True):
     # full raster. Mask off invalid areas as NaNs.
     full_index = np.arange(bathymetry['size'], dtype=float)
     full_index[invalid.flatten()] = np.nan
+    full_index = full_index.reshape(bathymetry['shape'], order='F')
+
+    # Create a sub-sampled matrix that containing the linear index of each
+    # pixel in the full raster.
+    sub_index = full_index[sub_rows, :]
+    sub_index = sub_index[:, sub_cols]
+    sub_index = sub_index.flatten(order='F')
+
+    # Index to valid features which occur in the sub-sampled raster.
+    feature_to_sub = np.where(np.in1d(index, sub_index))[0]
+
+    # Location of valid feature in sub-sampled raster.
+    sub_index = np.where(~np.isnan(sub_index))[0]
+
+    # Return valid indices in array of input indices and the corresponding
+    # location in the sub-sampled matrix.
+    return feature_to_sub, sub_index, sub_raster
+
+
+def select_extent(extent, index, bathymetry, verbose=True):
+    """Select a rectangular extent from sparse raster data.
+
+    Return the index to elements in sparse bathymetry which occupy a
+    rectangular region in Cartesian space.
+
+    Args:
+        extent (np.array): vector specifying the rectangular extent to
+            extract. The vector is specified in the form
+            [x-min, x-max, y-min, y-max].
+        index (np.array): array of indices indicating which elements of the
+            bathymetry raster contain valid values.
+        bathymetry (dict): Bathymetry meta-data (see :py:func:meta_from_bins).
+        verbose (bool, optional): If set to True the contents of the bathymetry
+            meta-data dictionary will be summarised on stdout.
+
+    Returns: tuple: The first element is a np.array of indices, referring to
+        elements in the sparse bathymetry that occur in the sub-sampled
+        raster. The second element is a corresponding np.array that indicates
+        where the sub-sampled sparse bathymetry occurs in the sub-sampled
+        raster. The final element of the tuple is a bathymetry meta-data
+        dictionary containing size information of the sub-sampled bathymetry
+        raster.
+
+    """
+
+    # Ensure extent is specified correctly.
+    if len(extent) != 4:
+        msg = 'extent must contain four elements [x-min, x-max, y-min, y-max].'
+        raise Exception(msg)
+    if (extent[0] >= extent[1]):
+        msg = 'X-min must be smaller than X-max.'
+        raise Exception(msg)
+    if (extent[2] >= extent[3]):
+        msg = 'Y-min must be smaller than Y-max.'
+        raise Exception(msg)
+
+    # Get rows and columns within extent.
+    sub_cols = ((bathymetry['x_bins'] >= extent[0]) &
+                (bathymetry['x_bins'] <= extent[1]))
+    sub_rows = ((bathymetry['y_bins'] >= extent[2]) &
+                (bathymetry['y_bins'] <= extent[3]))
+
+    # Generate meta-data for sub-sampled raster.
+    sub_raster = meta_from_bins(bathymetry['x_bins'][sub_cols],
+                                bathymetry['y_bins'][sub_rows],
+                                bathymetry['zone'],
+                                resolution=bathymetry['resolution'],
+                                verbose=verbose)
+
+    # Create mask of valid locations in the raster given the index.
+    valid = np.zeros(bathymetry['size'], dtype=bool)
+    valid[index] = True
+    valid = valid.reshape(bathymetry['shape'], order='F')
+
+    # Create mask of valid locations in the raster given the row and column
+    # constraints.
+    valid[~sub_rows, :] = False
+    valid[:, ~sub_cols] = False
+
+    # Create a matrix that containing the linear index of each pixel in the
+    # full raster. Mask off invalid areas as NaNs.
+    full_index = np.arange(bathymetry['size'], dtype=float)
+    full_index[~valid.flatten(order='F')] = np.nan
     full_index = full_index.reshape(bathymetry['shape'], order='F')
 
     # Create a sub-sampled matrix that containing the linear index of each
