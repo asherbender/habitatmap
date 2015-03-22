@@ -24,6 +24,7 @@ The raster data can be manipulated using the following functions:
 Raster data can be visualised using:
 
     - :py:func:plot_raster
+    - :py:func:plot_sparse
 
 .. sectionauthor:: Asher Bender <a.bender@acfr.usyd.edu.au>
 .. codeauthor:: Asher Bender <a.bender@acfr.usyd.edu.au>
@@ -1063,3 +1064,24 @@ def plot_raster(raster, ax=None, extent=None, title=None, clabel=None,
         ax.axis(extent)
 
     return ax
+
+
+def plot_sparse(index, sparse, rows, cols, **kwargs):
+    """Plot raster as an image.
+
+    Args:
+        index (np.array): Column major order (Fortran-like) index where
+            `sparse` entries are located in the raster.
+        sparse (np.array): array of sparse raster data,
+        rows (int): number of rows in the raster.
+        cols (int): number of columns in the raster.
+        **kwargs: Are passed into :py:func:plot_raster when the raster is
+            rendered.
+
+    Returns:
+        matplotlib.axes.Axes: axes containing raster image.
+
+    """
+
+    raster = sparse_to_full(index, sparse, rows, cols)
+    return plot_raster(raster, **kwargs)
