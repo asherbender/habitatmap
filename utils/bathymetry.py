@@ -948,7 +948,7 @@ def select_extent(extent, index, bathymetry, verbose=True):
 
     # Create mask of valid locations in the raster given the row and column
     # constraints.
-    valid[~sub_rows, :] = False
+    valid[~sub_rows[::-1], :] = False
     valid[:, ~sub_cols] = False
 
     # Create a matrix that containing the linear index of each pixel in the
@@ -959,7 +959,7 @@ def select_extent(extent, index, bathymetry, verbose=True):
 
     # Create a sub-sampled matrix that containing the linear index of each
     # pixel in the full raster.
-    sub_index = full_index[sub_rows, :]
+    sub_index = full_index[sub_rows[::-1], :]
     sub_index = sub_index[:, sub_cols]
     sub_index = sub_index.flatten(order='F')
 
