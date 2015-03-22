@@ -13,14 +13,14 @@ displaying information about the bathymetry:
 
     - :py:func:load_bathymetry_file
     - :py:func:load_bathymetry_meta
-    - :py:func:sparse_to_raster
+    - :py:func:sparse_to_full
 
 Raster data can be visualised using:
 
     - :py:func:plot_raster
 
 .. sectionauthor:: Asher Bender <a.bender@acfr.usyd.edu.au>
-.. codeauthor:: Asher Bender <a.bender@acfr.usyd.edu.au>Email
+.. codeauthor:: Asher Bender <a.bender@acfr.usyd.edu.au>
 
 """
 import os
@@ -424,11 +424,11 @@ def load_bathymetry(bathymetry_path, invalid=np.nan, verbose=True):
             raise
 
     # Reshape sparse bathymetry data into a dense raster.
-    bathy['depth'] = sparse_to_raster(bathy['index'],
-                                      bathy['depth'],
-                                      bathy['rows'],
-                                      bathy['cols'],
-                                      invalid=invalid)
+    bathy['depth'] = sparse_to_full(bathy['index'],
+                                    bathy['depth'],
+                                    bathy['rows'],
+                                    bathy['cols'],
+                                    invalid=invalid)
 
     # Summarise bathymetry data.
     if verbose:
@@ -655,7 +655,40 @@ def load_features(features, bathymetry_path, transform=False, verbose=True):
     return features, feature_name, np.where(index)[0]
 
 
-def sparse_to_raster(index, sparse, rows, cols, invalid=np.nan):
+def full_to_sparse(raster, invalid=np.nan):
+    """Convert a dense raster into sparse data.
+
+    Args:
+        raster (np.array): (MxN) array of raster data.
+            `sparse` entries are located in the raster.
+        invalid (value, optional): Value to used to represent pixels where
+            raster data is not available.
+
+    Returns:
+
+        tuple: The first element is a column major order (Fortran-like) index
+            where `sparse` entries are located in the raster. The second
+            element is an array of sparse raster data.
+
+    """
+
+    # Flatten raster data into column major order (Fortran-like).
+    raster = raster.flatten(order='F')
+
+    # Find locations in the bathymetry that are valid.
+    if np.isnan(invalid):
+        # Special case. For some reason the following does not work:
+        #
+        #     raster != np.nan
+        #
+        index = np.where(~np.isnan(raster))[0]
+    else:
+        index = np.where(raster != invalid)[0]
+
+    return index, raster[index]
+
+
+def sparse_to_full(index, sparse, rows, cols, invalid=np.nan):
     """Convert sparse data into a dense raster.
 
     Args:
@@ -665,10 +698,10 @@ def sparse_to_raster(index, sparse, rows, cols, invalid=np.nan):
         rows (int): number of rows in the raster.
         cols (int): number of columns in the raster.
         invalid (value, optional): Value to used to represent pixels where
-            bathymetry is not available.
+            raster is not available.
 
     Returns:
-        np.array: dense raster containing sparse data.
+        np.array: (rows x cols) dense raster containing sparse data.
 
     """
 
