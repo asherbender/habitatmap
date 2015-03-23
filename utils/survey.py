@@ -1,5 +1,6 @@
 import os
 import utm
+import copy
 import pickle
 import collections
 import numpy as np
@@ -27,6 +28,8 @@ class stereo_pose_dct(collections.OrderedDict):
         self['timestamp'] = list()
         self['latitude'] = list()
         self['longitude'] = list()
+        self['easting'] = list()
+        self['northing'] = list()
         self['X'] = list()
         self['Y'] = list()
         self['Z'] = list()
@@ -60,6 +63,8 @@ class stereo_pose_dct(collections.OrderedDict):
         msg += 'timestamp:             ({0:n}, )\n'.format(len(self['timestamp']))
         msg += 'latitude:              ({0:n}, )\n'.format(len(self['latitude']))
         msg += 'longitude:             ({0:n}, )\n'.format(len(self['longitude']))
+        msg += 'easting:               ({0:n}, )\n'.format(len(self['easing']))
+        msg += 'northing:              ({0:n}, )\n'.format(len(self['northing']))
         msg += 'X:                     ({0:n}, )\n'.format(len(self['X']))
         msg += 'Y:                     ({0:n}, )\n'.format(len(self['Y']))
         msg += 'Z:                     ({0:n}, )\n'.format(len(self['Z']))
@@ -84,6 +89,14 @@ class stereo_pose_dct(collections.OrderedDict):
 
     def __str__(self):
         return self.__summarise()
+
+    def copy(self):
+
+        cpy = stereo_pose_dct()
+        for key in self.keys():
+            cpy[key] = copy.deepcopy(self[key])
+
+        return cpy
 
 
 def _parse_stereo_pose_est(fpath, header_spec, origin_spec, column_spec):
@@ -150,10 +163,8 @@ def _parse_stereo_pose_est(fpath, header_spec, origin_spec, column_spec):
 
             pointer += 1
 
-        # Assume name of keys (a bit sloppy). If they exist, get local
-        # northing and easting for origin.
-        if (('origin latitude' in data.keys()) and
-            ('origin longitude' in data.keys())):
+        #  If they exist, get local northing and easting for origin.
+        if data['origin latitude'] and data['origin longitude']:
             local = utm.from_latlon(data['origin latitude'],
                                     data['origin longitude'])
 
@@ -187,6 +198,11 @@ def _parse_stereo_pose_est(fpath, header_spec, origin_spec, column_spec):
                 data[key] = np.array(data[key], dtype=dt)
             else:
                 data[key] = np.array(data[key])
+
+    # Create local Eastings and Northings.
+    if data['origin easting'] and data['origin northing']:
+        data['easting'] = data['origin easting'] + data['Y']
+        data['northing'] = data['origin northing'] + data['X']
 
     # -------------------------------------------------------------------------
     #  Store campaign, dive and renav names
@@ -229,6 +245,8 @@ def read_stereo_pose_est(fname):
                 'timestamp':             time in seconds
                 'latitude':              in degrees
                 'longitude':             in degrees
+                'easting':               in meters
+                'northing':              in meters
                 'X':                     in meters, local navigation frame
                 'Y':                     in meters, local navigation frame
                 'Z':                     in meters, local navigation frame
@@ -242,6 +260,7 @@ def read_stereo_pose_est(fname):
                 'trajectory cross-over': likely trajectory cross-over point 1 for true, 0 for false
 
                 'length':                number of elements in the navigation data
+                'image directory':       name of image folder
                 'campaign name':         name of campaign
                 'dive name':             name of dive
                 'renav name':            name of renav (seabed slam run)
@@ -318,18 +337,75 @@ def index_stereo_pose_est(nav_data, index):
 
     # Index vector elements.
     for key in nav_data.keys():
-        try:
-            if len(nav_data[key]) == nav_data['length']:
-                indexed[key] = nav_data[key][index]
-                length_key = key
-            else:
-                indexed[key] = nav_data[key]
-        except:
+
+        if type(nav_data[key]) is np.ndarray:
+            indexed[key] = nav_data[key][index]
+            length_key = key
+        else:
             indexed[key] = nav_data[key]
 
     # Store new length.
     indexed['length'] = len(indexed[length_key])
     return indexed
+
+
+def campaign_to_dict(campaign):
+    """Convert an array of navigation dictionaries into a single dictionary
+
+    :py:func:campaign_to_dict converts an array of navigation dictionaries
+    (campaign) into a single dictionary containing all the concatenated data
+    from a campaign.
+
+    The following additional fields are added:
+
+        dives:      a scalar indicating the number of concatenated dives in
+                    the structure.
+
+        dive index: a (Nx1) vector of integers mapping each AUV pose to a
+                    specific dive where N are the total number of observations
+                    in the campaign. The integers will range from 1 to M where
+                    M are the total number of dives in the campaign
+
+
+    """
+
+    for i, dive in enumerate(campaign):
+
+        # Create first dive in campaign.
+        if i == 0:
+            concat = dive.copy()
+            concat['dive index'] = i * np.ones(dive['length'])
+            for key in concat.keys():
+
+                # If item is not a numpy array, convert it to a list.
+                if type(concat[key]) is not np.ndarray:
+                    concat[key] = [concat[key], ]
+
+        # Copy data from subsequent dives into communal structure.
+        else:
+            for key in dive.keys():
+                if key not in concat:
+                    msg = "The key '{0}' is not in dive {0}. All dives"
+                    msg += ' must share the same fields.'
+                    raise Exception(msg.format(key, i))
+
+                # Item is a list, append data.
+                if isinstance(concat[key], list):
+                    concat[key].append(copy.deepcopy(dive[key]))
+
+                # Item is not a list - it must be a numpy array.
+                else:
+                    concat[key] = np.concatenate((concat[key], dive[key]))
+
+            # Track which poses belong to what dives.
+            concat['dive index'] = np.concatenate((concat['dive index'],
+                                                   i * np.ones(dive['length'])))
+
+    # Store number of length of data and dives.
+    concat['length'] = len(concat['dive index'])
+    concat['dives'] = len(campaign)
+
+    return concat
 
 
 def load_stereo_pose_est_cluster(nav_data, image_label_file):
