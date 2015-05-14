@@ -1,3 +1,4 @@
+import copy
 import time
 import pyGPs
 import bathymetry
@@ -163,7 +164,7 @@ class GPR(object):
         nlZ, post = self._gpr.getPosterior(self, der=False)
         return nlZ
 
-    def predict(self, xs, verbose=True):
+    def predict(self, xs, X=None, Y=None, verbose=True):
         """Perform inference in Gaussian process regression model.
 
         Args:
@@ -176,9 +177,92 @@ class GPR(object):
 
         """
 
-        N = xs.shape[0]
-        ymu, ys2, fmu, fs2, lp = self._gpr.predict(xs, ys=np.ones((N, 1)))
-        return fmu.flatten(), fs2.flatten()
+        # Use posterior from stored data.
+        if (X is None) and (Y is None):
+            posterior = None
+
+        # Re-calculate posterior from new data.
+        elif (X is not None) and (Y is not None):
+            posterior = copy.deepcopy(self._gpr.posterior)
+            self._gpr.getPosterior(x=X, y=Y, der=False)
+
+        else:
+            raise Exception('X and Y must be specified as a pair.')
+
+        # Perform inference in model.
+        ymu, ys2 = self._gpr.predict(xs)[0:2]
+
+        # Restore the original posterior
+        if posterior:
+            self._gpr.posterior = posterior
+
+        return ymu.flatten(), ys2.flatten()
+
+    def predict_variance(self, X, xs):
+        """Infer variance at test locations given training data.
+
+        Args:
+            xs (np.array): (MxD) input queries.
+
+        Returns:
+            tuple:
+        """
+
+        if X.ndim == 1:
+            X = np.reshape(X, (X.shape[0], 1))
+
+        if xs.ndim == 1:
+            xs = np.reshape(xs, (xs.shape[0], 1))
+
+        covfunc = self._gpr.covfunc
+        likfunc = self._gpr.likfunc
+
+        # Re-calculate posterior from new data. The variance is independence of
+        # the mean - use dummy data.
+        original_posterior = copy.deepcopy(self._gpr.posterior)
+        self._gpr.getPosterior(x=X, y=np.zeros(X.shape), der=False)
+        posterior = copy.deepcopy(self._gpr.posterior)
+        self._gpr.posterior = original_posterior
+
+        alpha = posterior.alpha
+        L = posterior.L
+        sW = posterior.sW
+        nz = range(len(alpha[:, 0]))
+
+        # in case L is not provided, we compute it
+        if L == []:
+            K = covfunc.getCovMatrix(x=X[nz, :], mode='train')
+            L = pyGPs.tools.jitchol((np.eye(len(nz)) + np.dot(sW, sW.T) * K).T)
+
+        Ltril = np.all(np.tril(L, -1) == 0)
+        ns = xs.shape[0]
+        nperbatch = 1000
+        nact = 0
+
+        ys2 = np.zeros((ns, 1))
+        while nact <= ns - 1:
+            id = range(nact, min(nact + nperbatch, ns))
+            kss = covfunc.getCovMatrix(z=xs[id, :], mode='self_test')
+            Ks = covfunc.getCovMatrix(x=X[nz, :], z=xs[id, :], mode='cross')
+            N = (alpha.shape)[1]
+
+            # L is triangular => use Cholesky parameters (alpha,sW,L)
+            if Ltril:
+                V = np.linalg.solve(L.T, np.tile(sW, (1, len(id)))*Ks)
+                fs2 = kss - np.array([(V*V).sum(axis=0)]).T
+
+            # L is not triangular => use alternative parametrization
+            else:
+                fs2 = kss + np.array([(Ks*np.dot(L, Ks)).sum(axis=0)]).T
+
+            Fs2 = np.tile(np.maximum(fs2, 0), (1, N))[:]
+            Fmu = np.zeros(Fs2.shape)
+            Ys2 = likfunc.evaluate(None, Fmu, Fs2, None, None, 3)[2]
+
+            ys2[id] = np.reshape(np.reshape(Ys2, (np.prod(Ys2.shape), N)).sum(axis=1)/N, (len(id), 1))
+            nact = id[-1] + 1
+
+        return ys2
 
 
 class GPR_FITC(GPR):

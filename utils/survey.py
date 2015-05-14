@@ -452,6 +452,35 @@ def load_stereo_pose_est_cluster(nav_data, image_label_file):
     return nav_data, processed
 
 
+def consolidate_stereo_pose_est_clusters(nav_data, consolidation,
+                                         key='cluster'):
+
+    # Ensure the consolidation vector has been specified correctly.
+    clusters = np.unique(nav_data['cluster'])
+    if len(clusters) != len(consolidation):
+        msg = '{0} clusters detected. Only {1} assignments specified.'
+        raise Exception(msg.format(len(clusters), len(consolidation)))
+
+    # Create new field if it does not exist.
+    if key not in nav_data:
+        nav_data[key] = copy.deepcopy(nav_data['cluster'])
+
+    # Consolidate clusters.
+    cluster = copy.deepcopy(nav_data['cluster'])
+    for i, C in enumerate(consolidation):
+        msg = '{0:>2n} -> {1:>2n}'
+        print msg.format(i + 1, C)
+
+        idx = (cluster == i + 1)
+        nav_data[key][idx] = C
+
+    # Remove unassigned clusters.
+    idx = nav_data[key] != 0
+    nav_data = index_stereo_pose_est(nav_data, idx)
+
+    return nav_data
+
+
 def load_AUV_classes(AUV_file, verbose=True):
 
     """Load AUV classification of seabed."""
@@ -468,7 +497,6 @@ def load_AUV_classes(AUV_file, verbose=True):
         print 'Classification Summary:'
         print '    easting:     [{0[0]}x{0[1]}]'.format(AUV['easting'].shape)
         print '    northing:    [{0[0]}x{0[1]}]'.format(AUV['northing'].shape)
-        print '    probability: [{0[0]}x{0[1]}]'.format(AUV['probability'].shape)
         print '    class:       [{0[0]}x{0[1]}]'.format(AUV['class'].shape)
         print '    K:           {0}'.format(AUV['K'])
 
